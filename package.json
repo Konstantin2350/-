@@ -1,0 +1,20 @@
+{
+  "name": "auto-screen-perplexity",
+  "version": "1.0.0",
+  "description": "Авто скрин для perplexity: Playwright screenshot service that queries the Perplexity API",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "playwright": "1.44.0"
+  },
+  "license": "MIT"
+}
