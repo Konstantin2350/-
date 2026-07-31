@@ -19,13 +19,15 @@ cp .env.example .env
 
 | Переменная | Описание | По умолчанию |
 | --- | --- | --- |
-| `PERPLEXITY_API_KEY` | Ключ Perplexity API | — |
+| `PERPLEXITY_API_KEY` | Ключ Perplexity API (опционально; нужен только с `prompt`) | пусто |
 | `PERPLEXITY_URL` | URL endpoint | `https://api.perplexity.ai/chat/completions` |
 | `PERPLEXITY_MODEL` | Модель | `sonar` |
 | `MIN_CONFIDENCE` | Порог уверенности | `0.78` |
 | `PLAYWRIGHT_PROFILE_DIR` | Каталог профиля Playwright | `./pw-profile` |
 | `ARTIFACT_DIR` | Каталог для скриншотов | `./artifacts` |
 | `PORT` | Порт сервиса | `8787` |
+
+Без `PERPLEXITY_API_KEY` сервис всё равно делает скриншоты; поле `analysis` в ответе будет `null`.
 
 ## Запуск локально
 

@@ -19,15 +19,45 @@ const {
   PORT = '8787',
 } = process.env;
 
+const PLACEHOLDER_KEYS = new Set([
+  '',
+  'your_key_here',
+  'changeme',
+  'xxx',
+  'TODO',
+  'replace_me',
+]);
+
+function resolvePerplexityKey(raw) {
+  const key = (raw || '').trim();
+  if (!key || PLACEHOLDER_KEYS.has(key)) return null;
+  return key;
+}
+
+const perplexityApiKey = resolvePerplexityKey(PERPLEXITY_API_KEY);
+
 fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
+
+function isHttpUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', model: PERPLEXITY_MODEL });
+  res.json({
+    status: 'ok',
+    model: PERPLEXITY_MODEL,
+    perplexityConfigured: Boolean(perplexityApiKey),
+  });
 });
 
 // Capture a screenshot of a given URL.
@@ -39,7 +69,7 @@ async function captureScreenshot(url) {
     const page = await context.newPage();
     await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
     const fileName = `shot-${Date.now()}.png`;
-    const filePath = path.join(ARTIFACT_DIR, fileName);
+    const filePath = path.resolve(ARTIFACT_DIR, fileName);
     await page.screenshot({ path: filePath, fullPage: true });
     return filePath;
   } finally {
@@ -53,7 +83,7 @@ async function askPerplexity(prompt) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+      Authorization: `Bearer ${perplexityApiKey}`,
     },
     body: JSON.stringify({
       model: PERPLEXITY_MODEL,
@@ -72,16 +102,29 @@ app.post('/capture', async (req, res) => {
   if (!url) {
     return res.status(400).json({ error: 'url is required' });
   }
+  if (!isHttpUrl(url)) {
+    return res.status(400).json({ error: 'url must be a valid http(s) URL' });
+  }
+
   try {
     const screenshotPath = await captureScreenshot(url);
     let analysis = null;
-    if (prompt && PERPLEXITY_API_KEY) {
-      analysis = await askPerplexity(prompt);
+    let analysisSkippedReason = null;
+
+    if (prompt) {
+      if (perplexityApiKey) {
+        analysis = await askPerplexity(prompt);
+      } else {
+        analysisSkippedReason =
+          'PERPLEXITY_API_KEY is missing or still a placeholder; screenshot captured without analysis';
+      }
     }
+
     res.json({
       screenshot: screenshotPath,
       minConfidence: Number(MIN_CONFIDENCE),
       analysis,
+      ...(analysisSkippedReason ? { analysisSkippedReason } : {}),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -90,4 +133,7 @@ app.post('/capture', async (req, res) => {
 
 app.listen(Number(PORT), () => {
   console.log(`auto-screen-perplexity listening on port ${PORT}`);
+  console.log(
+    `Perplexity analysis: ${perplexityApiKey ? 'enabled' : 'disabled (no API key)'}`
+  );
 });

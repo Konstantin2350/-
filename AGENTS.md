@@ -16,9 +16,14 @@ analyzes them with the Perplexity API. There is no database and no frontend.
 
 ### Testing the core flow (no GUI)
 This is a headless API service; test it with curl, not a browser:
-- `curl http://localhost:8787/health` → `{"status":"ok","model":"sonar"}`
+- `curl http://localhost:8787/health` →
+  `{"status":"ok","model":"sonar","perplexityConfigured":false}`
+  (`perplexityConfigured` is `true` only when a real `PERPLEXITY_API_KEY` is set;
+  empty values and placeholders like `your_key_here` count as not configured).
 - `curl -X POST http://localhost:8787/capture -H "Content-Type: application/json" -d '{"url":"https://example.com"}'`
-  → returns the saved screenshot path (under `ARTIFACT_DIR`, default `./artifacts`).
+ → returns the saved screenshot path (under `ARTIFACT_DIR`, default `./artifacts`).
+- If a `prompt` is sent without a real API key, capture still succeeds and the
+  response includes `analysisSkippedReason` instead of failing.
 
 ### Non-obvious caveats
 - Playwright browser deps: this VM runs Ubuntu Noble, where `npx playwright install --with-deps chromium`
