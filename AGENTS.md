@@ -30,7 +30,9 @@ This is a headless API service; test it with curl, not a browser:
 - `curl -X POST http://localhost:8787/nlp/models/pack -H "Content-Type: application/json" -d '{"goal":"Сдать 3 лота","owner":"Альбина","startCycle":true,"staff":"Альбина"}'`
 - `curl -X POST http://localhost:8787/nlp/okr -H "Content-Type: application/json" -d '{"goal":"Сдать 3 лота","owner":"Альбина"}'`
 - `curl http://localhost:8787/nlp/digest`
-- With the server running: `npm run nlp:smoke` exercises cycles + models + OKR/check-in/digest/retro.
+- `curl http://localhost:8787/nlp/skills` → NLP-master skills for AI employees (work-only)
+- `curl -X POST http://localhost:8787/nlp/skills/pack -H "Content-Type: application/json" -d '{"role":"sales","staff":"Альбина"}'`
+- With the server running: `npm run nlp:smoke` exercises cycles + models + OKR/check-in + master skills.
 
 ### Non-obvious caveats
 - Playwright browser deps: this VM runs Ubuntu Noble, where `npx playwright install --with-deps chromium`

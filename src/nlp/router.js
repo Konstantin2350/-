@@ -34,6 +34,14 @@ const {
   buildDigest,
   buildRetro,
 } = require('./checkin');
+const {
+  MASTER_SKILLS,
+  MASTER_BOUNDARY,
+  buildEmployeeSkillPack,
+  applyMasterSkill,
+  buildMasterPlaybook,
+  ROLE_PRESETS,
+} = require('./masterSkills');
 
 function tryParseJsonContent(text) {
   if (!text || typeof text !== 'string') return null;
@@ -99,13 +107,25 @@ function createNlpRouter({ store, okrStore, askPerplexity, enabled, hasApiKey })
         'GROW coaching',
         'Range (async standup cadence)',
       ],
+      copiedFromSimilarApps: {
+        Tability: ['weekly check-in', 'confidence 1-10', 'on_track/at_risk/off_track'],
+        Weekdone: ['OKR + Key Results', 'PPP plans/progress/problems'],
+        GROW: ['Goal-Reality-Options-Will', 'commitment gate'],
+        Range: ['async standup cadence', 'goal-linked check-ins'],
+        Coachful: ['execution between rituals', 'retro/learnings'],
+      },
       models: MODEL_CATALOG.map((m) => m.id),
+      masterSkills: MASTER_SKILLS.map((s) => s.id),
       endpoints: [
         'GET /nlp/meta',
         'GET /nlp/board',
         'GET /nlp/digest',
         'POST /nlp/morning',
         'POST /nlp/checkin',
+        'GET /nlp/skills',
+        'POST /nlp/skills/pack',
+        'POST /nlp/skills/playbook',
+        'POST /nlp/skills/apply',
         'GET /nlp/models',
         'POST /nlp/models/wfo',
         'POST /nlp/models/goal-path',
@@ -148,6 +168,45 @@ function createNlpRouter({ store, okrStore, askPerplexity, enabled, hasApiKey })
   }
 
   router.use(guard);
+
+  // Навыки NLP-мастера для ИИ-сотрудников (только рабочие процессы)
+  router.get('/skills', (_req, res) => {
+    res.json({
+      therapy: false,
+      boundary: MASTER_BOUNDARY,
+      roles: Object.keys(ROLE_PRESETS),
+      skills: MASTER_SKILLS,
+      usage: {
+        pack: 'POST /nlp/skills/pack { role, staff, focus }',
+        playbook: 'POST /nlp/skills/playbook { role, staff, focus }',
+        apply: 'POST /nlp/skills/apply { skillId, situation }',
+      },
+    });
+  });
+
+  router.post('/skills/pack', (req, res) => {
+    try {
+      res.json(buildEmployeeSkillPack(req.body || {}));
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/skills/playbook', (req, res) => {
+    try {
+      res.json(buildMasterPlaybook(req.body || {}));
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/skills/apply', (req, res) => {
+    try {
+      res.json(applyMasterSkill(req.body || {}));
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
 
   // Каталог и эндпоинты операционных моделей
   router.get('/models', (_req, res) => {

@@ -79,6 +79,8 @@ app.get('/', (_req, res) => {
       nlpModels: '/nlp/models',
       nlpModelPack: 'POST /nlp/models/pack',
       nlpOkr: 'POST /nlp/okr',
+      nlpSkills: '/nlp/skills',
+      nlpSkillsPack: 'POST /nlp/skills/pack',
     },
   });
 });

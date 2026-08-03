@@ -8,4 +8,5 @@ module.exports = {
   ...require('./models'),
   ...require('./checkin'),
   suggestOkrsFromGoal: require('./okr').suggestOkrsFromGoal,
+  ...require('./masterSkills'),
 };

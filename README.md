@@ -113,6 +113,32 @@ curl -X POST http://localhost:8787/nlp/models/pack \
 
 Циклы: `ARTIFACT_DIR/nlp-cycles/*.json`.
 
+### Что скопировано из похожих приложений
+
+| Приложение | Взяли |
+| --- | --- |
+| **Tability** | Weekly check-in, confidence 1–10, статусы on_track/at_risk/off_track |
+| **Weekdone** | OKR + Key Results, PPP (plans/progress/problems) |
+| **GROW** | Goal→Reality→Options→Will, commitment ≥8 |
+| **Range** | Async standup cadence, check-in привязан к цели |
+| **Coachful-подход** | Исполнение между ритуалами, retro/learnings |
+
+### Навыки NLP-мастера для ИИ-сотрудников (только работа)
+- `GET /nlp/skills` — каталог навыков
+- `POST /nlp/skills/pack` — systemPrompt + набор навыков под роль (`sales|ops|manager|analyst|closer|general`)
+- `POST /nlp/skills/playbook` — дневной ритуал + правила эскалации
+- `POST /nlp/skills/apply` — применить навык к рабочей ситуации
+
+```bash
+curl -X POST http://localhost:8787/nlp/skills/pack \
+  -H "Content-Type: application/json" \
+  -d '{"role":"sales","staff":"Альбина","focus":"сдать лоты Северная 100"}'
+
+curl -X POST http://localhost:8787/nlp/skills/apply \
+  -H "Content-Type: application/json" \
+  -d '{"skillId":"objection-handle","situation":"Дорого","staff":"Альбина"}'
+```
+
 ### Бизнес-слой из лучших практик (Tability / Weekdone / GROW)
 - `POST /nlp/okr` / `POST /nlp/okr/suggest` — Objective + Key Results + прогресс
 - Статусы KR/OKR: `on_track` | `at_risk` | `off_track`

@@ -147,7 +147,30 @@ async function main() {
   const retro = await req('POST', `/nlp/cycle/${albina.id}/retro`, {});
   if (!retro.retro?.learnings?.length) throw new Error('retro empty');
 
-  console.log('OK nlp smoke + models + okr/checkin/digest');
+  const skills = await req('GET', '/nlp/skills');
+  if (!skills.skills?.some((s) => s.id === 'meta-model')) {
+    throw new Error('master skills missing');
+  }
+  const packSkills = await req('POST', '/nlp/skills/pack', {
+    role: 'sales',
+    staff: 'Альбина',
+    focus: 'сдать лоты',
+  });
+  if (!packSkills.systemPrompt || !packSkills.skills?.length) {
+    throw new Error('skills pack incomplete');
+  }
+  if (/терапи/i.test(packSkills.systemPrompt) && !/ЗАПРЕЩЕНО: терапия/i.test(packSkills.systemPrompt)) {
+    throw new Error('skills pack must forbid therapy');
+  }
+  const applied = await req('POST', '/nlp/skills/apply', {
+    skillId: 'objection-handle',
+    situation: 'Дорого',
+    staff: 'Альбина',
+    role: 'sales',
+  });
+  if (!applied.nextAction) throw new Error('skill apply missing nextAction');
+
+  console.log('OK nlp smoke + models + okr/checkin + master skills');
 }
 
 main().catch((err) => {
