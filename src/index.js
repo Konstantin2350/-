@@ -7,7 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { chromium } = require('playwright');
-const { createStore, createNlpRouter } = require('./nlp');
+const { createStore, createNlpRouter, createOkrStore } = require('./nlp');
 
 const {
   PERPLEXITY_API_KEY,
@@ -56,6 +56,7 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 const nlpStore = createStore(ARTIFACT_DIR);
+const okrStore = createOkrStore(ARTIFACT_DIR);
 const perplexityReady = hasPerplexityKey(PERPLEXITY_API_KEY);
 
 app.get('/', (_req, res) => {
@@ -72,15 +73,19 @@ app.get('/', (_req, res) => {
       capture: 'POST /capture',
       nlpMeta: '/nlp/meta',
       nlpBoard: '/nlp/board',
+      nlpDigest: '/nlp/digest',
       nlpMorning: 'POST /nlp/morning',
+      nlpCheckin: 'POST /nlp/checkin',
       nlpModels: '/nlp/models',
       nlpModelPack: 'POST /nlp/models/pack',
+      nlpOkr: 'POST /nlp/okr',
     },
   });
 });
 
 app.get('/health', (_req, res) => {
   const counts = nlpEnabled ? nlpStore.counts() : null;
+  const okrs = nlpEnabled ? okrStore.list({ limit: 1000 }) : [];
   res.json({
     status: 'ok',
     model: PERPLEXITY_MODEL,
@@ -90,6 +95,12 @@ app.get('/health', (_req, res) => {
       mode: 'operational',
       therapy: false,
       cycles: counts,
+      okrs: {
+        total: okrs.length,
+        on_track: okrs.filter((o) => o.status === 'on_track').length,
+        at_risk: okrs.filter((o) => o.status === 'at_risk').length,
+        off_track: okrs.filter((o) => o.status === 'off_track').length,
+      },
     },
   });
 });
@@ -156,6 +167,7 @@ app.use(
   '/nlp',
   createNlpRouter({
     store: nlpStore,
+    okrStore,
     askPerplexity,
     enabled: nlpEnabled,
     hasApiKey: perplexityReady,

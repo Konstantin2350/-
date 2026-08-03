@@ -47,9 +47,15 @@ const MODEL_CATALOG = [
     endpoint: 'POST /nlp/models/chunking',
   },
   {
+    id: 'grow',
+    name: 'GROW',
+    purpose: 'Goal → Reality → Options → Will (обязательство 1–10)',
+    endpoint: 'POST /nlp/models/grow',
+  },
+  {
     id: 'pack',
     name: 'Пакет моделей под цель',
-    purpose: 'Сразу WFO + путь + SCORE + экология + первый тест',
+    purpose: 'Сразу WFO + путь + SCORE + экология + GROW + первый тест',
     endpoint: 'POST /nlp/models/pack',
   },
 ];
@@ -438,6 +444,72 @@ function buildChunkingModel(input = {}) {
   };
 }
 
+/** GROW: Goal / Reality / Options / Will — стандарт бизнес-коучинга */
+function buildGrowModel(input = {}) {
+  const goal = requireText(input.goal, 'goal');
+  const reality = String(
+    input.reality || input.present || input.current || 'Текущая реальность не описана'
+  ).trim();
+  const options = normalizeList(input.options);
+  if (options.length === 0) {
+    options.push(
+      'Сделать один проверяемый тест сегодня и зафиксировать факт',
+      'Снять главный блокер процесса до конца дня',
+      'Сузить цель до одного измеримого результата на неделю'
+    );
+  }
+  const willAction = String(
+    input.will || input.willAction || input.firstTest || options[0]
+  ).trim();
+  let commitment = Number(input.commitment);
+  if (Number.isNaN(commitment)) commitment = 7;
+  commitment = Math.max(1, Math.min(10, Math.round(commitment)));
+
+  const wfo = buildWfoLocal({
+    goal,
+    owner: input.owner,
+    deadline: input.deadline,
+    evidence: input.evidence,
+    firstTest: willAction,
+    successMetric: input.successMetric,
+  });
+
+  const raiseCommitment =
+    commitment < 8
+      ? [
+          'Упростить will-действие до 25–40 минут',
+          'Назначить публичный check-in (доска/чат)',
+          'Убрать 1 конкурирующую задачу из WIP',
+        ]
+      : [];
+
+  return {
+    model: 'grow',
+    therapy: false,
+    grow: {
+      goal: wfo.outcome,
+      reality,
+      options,
+      will: {
+        action: willAction,
+        owner: wfo.owner,
+        deadline: wfo.deadline || 'сегодня/завтра',
+        commitment,
+      },
+    },
+    wfo,
+    commitmentGate:
+      commitment >= 8
+        ? 'Commitment достаточный — можно запускать TOTE/OKR'
+        : 'Commitment < 8 — усилить Will до запуска',
+    raiseCommitment,
+    nextActions: [
+      willAction,
+      commitment < 8 ? raiseCommitment[0] : 'Поставить weekly check-in с confidence',
+    ],
+  };
+}
+
 /** Пакет моделей сразу под рабочую цель */
 function buildModelPack(input = {}) {
   const goal = requireText(input.goal, 'goal');
@@ -446,6 +518,7 @@ function buildModelPack(input = {}) {
     owner: input.owner,
     deadline: input.deadline,
     present: input.present || input.current,
+    reality: input.reality || input.present || input.current,
     symptom: input.symptom || input.problem || `Нет прогресса по: ${goal}`,
     cause: input.cause || input.blocker || 'Не зафиксирован ежедневный тест/факт',
     obstacles: input.obstacles || input.blockers,
@@ -455,6 +528,9 @@ function buildModelPack(input = {}) {
     firstTest: input.firstTest,
     successMetric: input.successMetric,
     idea: goal,
+    commitment: input.commitment,
+    will: input.will || input.firstTest,
+    options: input.options,
   };
 
   const wfo = buildWfoModel(base);
@@ -464,6 +540,7 @@ function buildModelPack(input = {}) {
   const clarify = buildClarifyModel(base);
   const disney = buildDisneyModel(base);
   const chunking = buildChunkingModel(base);
+  const grow = buildGrowModel(base);
 
   return {
     model: 'pack',
@@ -475,6 +552,7 @@ function buildModelPack(input = {}) {
       firstTest: wfo.wfo.firstTest,
       owner: wfo.wfo.owner,
       ready: wfo.score.ready,
+      commitment: grow.grow.will.commitment,
     },
     models: {
       wfo,
@@ -484,17 +562,21 @@ function buildModelPack(input = {}) {
       clarify,
       disney,
       chunking,
+      grow,
     },
     recommendedFlow: [
       '1. Уточнить цель (clarify), если isVague=true',
       '2. Зафиксировать WFO checklist ready',
-      '3. Пройти ecology mitigations',
-      '4. Запустить TOTE через /nlp/cycle или /nlp/morning',
-      '5. Каждый день: test → при нужде operate',
+      '3. GROW Will с commitment ≥ 8',
+      '4. Создать OKR (/nlp/okr) и привязать KR',
+      '5. Пройти ecology mitigations',
+      '6. Запустить TOTE (/nlp/cycle|/nlp/morning)',
+      '7. Weekly check-in: confidence + PPP',
     ],
     nextActions: [
       wfo.wfo.firstTest,
       ...ecology.mitigations.slice(0, 1),
+      'Создать OKR и поставить первый weekly check-in',
     ],
   };
 }
@@ -508,5 +590,6 @@ module.exports = {
   buildClarifyModel,
   buildDisneyModel,
   buildChunkingModel,
+  buildGrowModel,
   buildModelPack,
 };

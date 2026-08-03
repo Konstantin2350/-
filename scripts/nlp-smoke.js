@@ -99,7 +99,55 @@ async function main() {
   });
   if (!path.path?.length) throw new Error('goal-path empty');
 
-  console.log('OK nlp smoke + models');
+  const grow = await req('POST', '/nlp/models/grow', {
+    goal: 'Сдать 3 лота',
+    reality: 'Мало показов',
+    owner: 'Альбина',
+    commitment: 9,
+  });
+  if (grow.grow?.will?.commitment !== 9) throw new Error('grow commitment failed');
+
+  const okrRes = await req('POST', '/nlp/okr', {
+    goal: 'Сдать 3 пустующих лота на Северной 100',
+    owner: 'Альбина',
+    deadline: '2026-08-17',
+  });
+  const okr = okrRes.okr;
+  if (!okr?.keyResults?.length) throw new Error('okr keyResults missing');
+
+  const krId = okr.keyResults[0].id;
+  const updated = await req('PATCH', `/nlp/okr/${okr.id}/kr/${krId}`, {
+    current: 1,
+    confidence: 7,
+  });
+  if (updated.okr.keyResults[0].current !== 1) throw new Error('kr update failed');
+
+  await req('POST', `/nlp/okr/${okr.id}/checkin`, {
+    confidence: 7,
+    plans: '2 показа',
+    progress: '1 договор в работе',
+    problems: 'ждём сравнение цен',
+    krUpdates: [{ id: krId, current: 1, confidence: 7 }],
+  });
+
+  const checkin = await req('POST', `/nlp/cycle/${pack.cycle.id}/checkin`, {
+    confidence: 6,
+    plans: 'касания',
+    progress: 'есть ответы',
+    problems: 'мало слотов',
+    nextTest: 'назначить 2 показа',
+  });
+  if (checkin.cycle.trafficLight !== 'at_risk') {
+    throw new Error('expected at_risk traffic light');
+  }
+
+  const digest = await req('GET', '/nlp/digest');
+  if (!digest.digest?.lines?.length) throw new Error('digest empty');
+
+  const retro = await req('POST', `/nlp/cycle/${albina.id}/retro`, {});
+  if (!retro.retro?.learnings?.length) throw new Error('retro empty');
+
+  console.log('OK nlp smoke + models + okr/checkin/digest');
 }
 
 main().catch((err) => {

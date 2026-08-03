@@ -113,6 +113,28 @@ curl -X POST http://localhost:8787/nlp/models/pack \
 
 Циклы: `ARTIFACT_DIR/nlp-cycles/*.json`.
 
+### Бизнес-слой из лучших практик (Tability / Weekdone / GROW)
+- `POST /nlp/okr` / `POST /nlp/okr/suggest` — Objective + Key Results + прогресс
+- Статусы KR/OKR: `on_track` | `at_risk` | `off_track`
+- `POST /nlp/checkin` и `POST /nlp/cycle/:id/checkin` — weekly check-in:
+  confidence 1–10 + PPP (plans/progress/problems)
+- `GET /nlp/digest` — дайджест: что движется / что буксует / кому check-in
+- `POST /nlp/cycle/:id/retro` — ретро по истории цикла
+- `POST /nlp/models/grow` — Goal → Reality → Options → Will (commitment)
+
+```bash
+# OKR + weekly check-in
+curl -X POST http://localhost:8787/nlp/okr \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Сдать 3 лота","owner":"Альбина"}'
+
+curl -X POST http://localhost:8787/nlp/okr/<id>/checkin \
+  -H "Content-Type: application/json" \
+  -d '{"confidence":7,"plans":"2 показа","progress":"1 договор","problems":"цена"}'
+
+curl http://localhost:8787/nlp/digest
+```
+
 ### Логика «под ключ» (что улучшено)
 - Подсказки Operate по тексту блокера (показы, лиды, договоры, цена…)
 - Антидубль: активный цикл сотрудника переиспользуется
@@ -136,6 +158,9 @@ src/
     router.js
     wfo.js
     tote.js
+    models.js
+    okr.js
+    checkin.js
     prompts.js
     store.js
 scripts/

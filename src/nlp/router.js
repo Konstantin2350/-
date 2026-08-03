@@ -24,8 +24,16 @@ const {
   buildClarifyModel,
   buildDisneyModel,
   buildChunkingModel,
+  buildGrowModel,
   buildModelPack,
 } = require('./models');
+const { suggestOkrsFromGoal } = require('./okr');
+const {
+  buildCheckInPayload,
+  applyCheckInToCycle,
+  buildDigest,
+  buildRetro,
+} = require('./checkin');
 
 function tryParseJsonContent(text) {
   if (!text || typeof text !== 'string') return null;
@@ -74,7 +82,7 @@ function createCycleFromPlan(store, plan, extras = {}) {
   });
 }
 
-function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
+function createNlpRouter({ store, okrStore, askPerplexity, enabled, hasApiKey }) {
   const router = express.Router();
 
   router.get('/meta', (_req, res) => {
@@ -85,11 +93,19 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
       enabled,
       perplexity: Boolean(hasApiKey),
       boundary: SYSTEM_BOUNDARY,
+      inspiredBy: [
+        'Tability (weekly check-in + confidence)',
+        'Weekdone (PPP + OKR)',
+        'GROW coaching',
+        'Range (async standup cadence)',
+      ],
       models: MODEL_CATALOG.map((m) => m.id),
       endpoints: [
         'GET /nlp/meta',
         'GET /nlp/board',
+        'GET /nlp/digest',
         'POST /nlp/morning',
+        'POST /nlp/checkin',
         'GET /nlp/models',
         'POST /nlp/models/wfo',
         'POST /nlp/models/goal-path',
@@ -98,13 +114,22 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
         'POST /nlp/models/clarify',
         'POST /nlp/models/disney',
         'POST /nlp/models/chunking',
+        'POST /nlp/models/grow',
         'POST /nlp/models/pack',
+        'POST /nlp/okr',
+        'POST /nlp/okr/suggest',
+        'GET /nlp/okr',
+        'GET /nlp/okr/:id',
+        'POST /nlp/okr/:id/checkin',
+        'PATCH /nlp/okr/:id/kr/:krId',
         'POST /nlp/wfo',
         'POST /nlp/staff-cycle',
         'POST /nlp/cycle',
         'GET /nlp/cycle',
         'GET /nlp/cycle/:id',
         'POST /nlp/cycle/:id/advance',
+        'POST /nlp/cycle/:id/checkin',
+        'POST /nlp/cycle/:id/retro',
         'POST /nlp/cycle/:id/note',
         'POST /nlp/cycle/:id/archive',
         'POST /nlp/cycle/:id/reopen',
@@ -152,6 +177,112 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
   router.post('/models/clarify', runModel(buildClarifyModel));
   router.post('/models/disney', runModel(buildDisneyModel));
   router.post('/models/chunking', runModel(buildChunkingModel));
+  router.post('/models/grow', runModel(buildGrowModel));
+
+  // --- OKR (Tability/Weekdone-style) ---
+  router.post('/okr/suggest', (req, res) => {
+    try {
+      res.json({ draft: suggestOkrsFromGoal(req.body || {}) });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/okr', (req, res) => {
+    try {
+      if (!okrStore) {
+        return res.status(503).json({ error: 'okr store unavailable' });
+      }
+      const body = req.body || {};
+      const draft =
+        body.keyResults && body.objective
+          ? body
+          : { ...suggestOkrsFromGoal(body), ...body, objective: body.objective || body.goal };
+      const okr = okrStore.create(draft);
+      res.status(201).json({ okr });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.get('/okr', (req, res) => {
+    if (!okrStore) return res.status(503).json({ error: 'okr store unavailable' });
+    const okrs = okrStore.list({
+      limit: Number(req.query.limit || 50),
+      status: req.query.status,
+      owner: req.query.owner,
+    });
+    res.json({ okrs });
+  });
+
+  router.get('/okr/:id', (req, res) => {
+    if (!okrStore) return res.status(503).json({ error: 'okr store unavailable' });
+    const okr = okrStore.get(req.params.id);
+    if (!okr) return res.status(404).json({ error: 'okr not found' });
+    return res.json({ okr });
+  });
+
+  router.patch('/okr/:id/kr/:krId', (req, res) => {
+    try {
+      if (!okrStore) return res.status(503).json({ error: 'okr store unavailable' });
+      const okr = okrStore.updateKr(req.params.id, req.params.krId, req.body || {});
+      if (!okr) return res.status(404).json({ error: 'okr not found' });
+      res.json({ okr });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/okr/:id/checkin', (req, res) => {
+    try {
+      if (!okrStore) return res.status(503).json({ error: 'okr store unavailable' });
+      const payload = buildCheckInPayload(req.body || {});
+      const okr = okrStore.addCheckIn(req.params.id, payload);
+      if (!okr) return res.status(404).json({ error: 'okr not found' });
+      res.json({ okr, checkIn: payload });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  // Weekly digest (как Monday digest в OKR-инструментах)
+  router.get('/digest', (_req, res) => {
+    const cycles = store.list({ limit: 200 });
+    const okrs = okrStore ? okrStore.list({ limit: 200 }) : [];
+    res.json({ digest: buildDigest({ cycles, okrs }) });
+  });
+
+  // Универсальный check-in: по cycleId или staff (активный цикл)
+  router.post('/checkin', (req, res) => {
+    try {
+      const body = req.body || {};
+      const payload = buildCheckInPayload(body);
+      let cycle = null;
+      if (body.cycleId) cycle = store.get(body.cycleId);
+      else if (body.staff) cycle = store.findActiveByStaff(body.staff);
+      if (!cycle) {
+        return res.status(404).json({
+          error: 'active cycle not found',
+          hint: 'Передайте cycleId или staff с активным циклом',
+        });
+      }
+      const next = applyCheckInToCycle(cycle, payload);
+      const saved = store.update(cycle.id, next);
+
+      let okr = null;
+      if (body.okrId && okrStore) {
+        okr = okrStore.addCheckIn(body.okrId, payload);
+      }
+
+      res.json({
+        cycle: withRuntimeFlags(saved),
+        okr,
+        checkIn: payload,
+      });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
 
   // Пакет моделей; опционально сразу стартует TOTE-цикл
   router.post('/models/pack', (req, res) => {
@@ -492,6 +623,29 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
         cycle: withRuntimeFlags(saved),
         analysis: useAi ? analysis : null,
       });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/cycle/:id/checkin', (req, res) => {
+    try {
+      const cycle = store.get(req.params.id);
+      if (!cycle) return res.status(404).json({ error: 'cycle not found' });
+      const payload = buildCheckInPayload({ ...req.body, staff: req.body?.staff || cycle.staff });
+      const next = applyCheckInToCycle(cycle, payload);
+      const saved = store.update(cycle.id, next);
+      res.json({ cycle: withRuntimeFlags(saved), checkIn: payload });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/cycle/:id/retro', (req, res) => {
+    try {
+      const cycle = store.get(req.params.id);
+      if (!cycle) return res.status(404).json({ error: 'cycle not found' });
+      res.json({ retro: buildRetro(withRuntimeFlags(cycle)) });
     } catch (err) {
       res.status(err.status || 500).json({ error: err.message });
     }
