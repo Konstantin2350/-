@@ -1,7 +1,7 @@
 {
   "name": "auto-screen-perplexity",
   "version": "1.0.0",
-  "description": "Авто скрин для perplexity: Playwright screenshot service that queries the Perplexity API",
+  "description": "Авто скрин для perplexity + операционный NLP (WFO/TOTE) для коллектива",
   "main": "src/index.js",
   "type": "commonjs",
   "engines": {
@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "nlp:smoke": "node scripts/nlp-smoke.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

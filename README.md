@@ -1,137 +1,119 @@
-# Авто скрин для perplexity
+# Авто скрин для perplexity + операционный NLP
 
-Node.js-сервис, который делает скриншоты страниц через Playwright и анализирует их через Perplexity API.  
-Также содержит **операционный NLP для коллектива** (WFO/TOTE) — это про рабочие цели и циклы проверки, **не терапия**.
+Node.js-сервис:
+1. скриншоты страниц через Playwright (+ опциональный разбор через Perplexity);
+2. **операционный NLP для коллектива** (WFO/TOTE) — цели, тесты, коррекции. **Не терапия.**
 
 ## Стек
 
 - Node.js >= 18
-- Express (HTTP API)
-- Playwright (chromium, скриншоты)
-- Perplexity API (модель `sonar`, опционально)
+- Express
+- Playwright (chromium)
+- Perplexity API (опционально, модель `sonar`)
 
 ## Настройка
 
-1. Скопируйте файл окружения и впишите свои значения:
-
 ```bash
 cp .env.example .env
+npm install
+npx playwright install chromium   # без --with-deps на Ubuntu Noble
+npm start
 ```
 
 | Переменная | Описание | По умолчанию |
 | --- | --- | --- |
-| `PERPLEXITY_API_KEY` | Ключ Perplexity API | — |
+| `PERPLEXITY_API_KEY` | Ключ Perplexity (опционально) | — |
 | `PERPLEXITY_URL` | URL endpoint | `https://api.perplexity.ai/chat/completions` |
 | `PERPLEXITY_MODEL` | Модель | `sonar` |
 | `MIN_CONFIDENCE` | Порог уверенности | `0.78` |
-| `PLAYWRIGHT_PROFILE_DIR` | Каталог профиля Playwright | `./pw-profile` |
-| `ARTIFACT_DIR` | Каталог для скриншотов и NLP-циклов | `./artifacts` |
-| `PORT` | Порт сервиса | `8787` |
-| `NLP_STAFF_CYCLE` | Включить операционный NLP (`1`/`0`) | `1` |
+| `PLAYWRIGHT_PROFILE_DIR` | Профиль Playwright | `./pw-profile` |
+| `ARTIFACT_DIR` | Скриншоты + NLP JSON | `./artifacts` |
+| `PORT` | Порт | `8787` |
+| `NLP_STAFF_CYCLE` | Операционный NLP `1`/`0` | `1` |
 
-## Запуск локально
+## Под ключ: день команды
 
 ```bash
-npm install
-npx playwright install chromium
-npm start
+# 1) Утренний запуск циклов по ростеру (reuseActive не плодит дубли)
+curl -X POST http://localhost:8787/nlp/morning \
+  -H "Content-Type: application/json" \
+  -d '{
+    "roster": [
+      {"staff":"Альбина","focus":"сдать пустующие на Северной 100","deadline":"2026-08-17"},
+      {"staff":"Олег","focus":"закрыть 5 тёплых лидов"}
+    ]
+  }'
+
+# 2) Доска стендапа
+curl http://localhost:8787/nlp/board
+
+# 3) Вечер: тест не пройден → коррекция → тест пройден
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"test","passed":false,"note":"0 показов за день"}'
+
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"operate","action":"10 целевых касаний + 2 показа"}'
+
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"test","passed":true,"note":"3 договора"}'
 ```
 
-Сервис будет доступен на `http://localhost:8787`.
+Smoke без браузера (сервер должен быть запущен):
 
-## Запуск в Docker
+```bash
+npm run nlp:smoke
+```
+
+## API
+
+### Базовое
+- `GET /` — карта сервиса
+- `GET /health` — статус + счётчики NLP-циклов
+- `POST /capture` — скриншот (`url` обязателен, только http/https)
+
+### Операционный NLP (`therapy: false`)
+- `GET /nlp/meta`
+- `GET /nlp/board` — стендап-доска (STALL/OVERDUE)
+- `POST /nlp/morning` — создать/обновить циклы по ростеру
+- `POST /nlp/wfo` — Well-Formed Outcome
+- `POST /nlp/staff-cycle` — план сотрудника (`startCycle`, `reuseActive`)
+- `POST /nlp/cycle` / `GET /nlp/cycle` / `GET /nlp/cycle/:id`
+- `POST /nlp/cycle/:id/advance` — `test` \| `operate` \| `exit` (для `test` нужен `passed`)
+- `POST /nlp/cycle/:id/note` — хвост заметок без смены фазы
+- `POST /nlp/cycle/:id/archive` / `POST /nlp/cycle/:id/reopen`
+
+Опция `"ai": true` на wfo/staff-cycle/advance — обогащение через Perplexity, если ключ задан.
+
+Циклы: `ARTIFACT_DIR/nlp-cycles/*.json`.
+
+### Логика «под ключ» (что улучшено)
+- Подсказки Operate по тексту блокера (показы, лиды, договоры, цена…)
+- Антидубль: активный цикл сотрудника переиспользуется
+- Stall (нет движения 24ч) и overdue по `deadline`
+- Лимит итераций → статус `review`
+- Утренняя доска и notes tail
+
+## Docker
 
 ```bash
 docker build -t auto-screen .
 docker run -p 8787:8787 --env-file .env auto-screen
 ```
 
-## API
-
-### `GET /health`
-
-Проверка состояния сервиса (включая статус NLP).
-
-### `POST /capture`
-
-Делает скриншот страницы и (опционально) анализирует её через Perplexity.
-
-```bash
-curl -X POST http://localhost:8787/capture \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com", "prompt": "Опиши что на странице"}'
-```
-
-### Операционный NLP (не терапия)
-
-Граница: только цели, критерии, тесты и коррекции процесса. Без психологии/лечения.
-
-#### `GET /nlp/meta`
-
-Метаданные модуля и список эндпоинтов.
-
-#### `POST /nlp/wfo`
-
-Оформить Well-Formed Outcome (локально; с `"ai": true` — через Perplexity, если есть ключ).
-
-```bash
-curl -X POST http://localhost:8787/nlp/wfo \
-  -H "Content-Type: application/json" \
-  -d '{"goal":"Сдать 3 пустующих лота на Северной 100","owner":"Альбина","deadline":"2026-08-17"}'
-```
-
-#### `POST /nlp/staff-cycle`
-
-Быстрый операционный цикл для сотрудника/роли. `"startCycle": true` сразу создаёт TOTE-цикл.
-
-```bash
-curl -X POST http://localhost:8787/nlp/staff-cycle \
-  -H "Content-Type: application/json" \
-  -d '{"staff":"Альбина","focus":"сдать пустующие на Северной 100","startCycle":true}'
-```
-
-#### `POST /nlp/cycle` / `POST /nlp/cycle/:id/advance`
-
-Создать TOTE-цикл и шагать по нему: `test` → `operate` → `test` → `exit`.
-
-```bash
-# создать
-curl -X POST http://localhost:8787/nlp/cycle \
-  -H "Content-Type: application/json" \
-  -d '{"goal":"Закрыть 3 договора аренды","owner":"команда","successMetric":"3 подписанных договора"}'
-
-# тест не пройден
-curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
-  -H "Content-Type: application/json" \
-  -d '{"eventType":"test","passed":false,"note":"0 показов за день"}'
-
-# коррекция
-curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
-  -H "Content-Type: application/json" \
-  -d '{"eventType":"operate","action":"10 целевых касаний + 2 показа"}'
-
-# тест пройден → exit
-curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
-  -H "Content-Type: application/json" \
-  -d '{"eventType":"test","passed":true,"note":"3 договора"}'
-```
-
-Циклы сохраняются в `ARTIFACT_DIR/nlp-cycles/` (файлы JSON, без БД).
-
-## Структура проекта
+## Структура
 
 ```
-.
-├── src/
-│   ├── index.js          # Express + Playwright + Perplexity
-│   └── nlp/              # Операционный NLP (WFO/TOTE)
-│       ├── router.js
-│       ├── wfo.js
-│       ├── tote.js
-│       ├── prompts.js
-│       └── store.js
-├── Dockerfile
-├── package.json
-├── .env.example
-└── .gitignore
+src/
+  index.js
+  nlp/
+    router.js
+    wfo.js
+    tote.js
+    prompts.js
+    store.js
+scripts/
+  nlp-smoke.js
 ```

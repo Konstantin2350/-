@@ -1,6 +1,6 @@
 module.exports = {
-  ...require('./router'),
-  ...require('./store'),
+  createNlpRouter: require('./router').createNlpRouter,
+  createStore: require('./store').createStore,
   ...require('./wfo'),
   ...require('./tote'),
   ...require('./prompts'),

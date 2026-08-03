@@ -25,7 +25,8 @@ This is a headless API service; test it with curl, not a browser:
 - `curl -X POST http://localhost:8787/capture -H "Content-Type: application/json" -d '{"url":"https://example.com"}'`
   → returns the saved screenshot path (under `ARTIFACT_DIR`, default `./artifacts`).
 - `curl http://localhost:8787/nlp/meta` → operational NLP module metadata
-- `curl -X POST http://localhost:8787/nlp/staff-cycle -H "Content-Type: application/json" -d '{"staff":"Альбина","focus":"сдать лоты","startCycle":true}'`
+- `curl -X POST http://localhost:8787/nlp/morning -H "Content-Type: application/json" -d '{"roster":[{"staff":"Альбина","focus":"сдать лоты"}]}'`
+- With the server running: `npm run nlp:smoke` exercises morning → fail → operate → pass.
 
 ### Non-obvious caveats
 - Playwright browser deps: this VM runs Ubuntu Noble, where `npx playwright install --with-deps chromium`

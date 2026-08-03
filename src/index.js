@@ -1,8 +1,6 @@
 // src/index.js
-// Авто скрин для perplexity + операционный NLP для коллектива
-// Express service that takes a screenshot of a URL via Playwright
-// and asks the Perplexity API to describe / analyze the page.
-// Also exposes operational NLP (WFO/TOTE) routes — not therapy.
+// Авто скрин для perplexity + операционный NLP для коллектива (под ключ)
+// Express: Playwright screenshots, optional Perplexity, WFO/TOTE NLP board.
 
 require('dotenv').config();
 const fs = require('fs');
@@ -29,31 +27,71 @@ const nlpEnabled = !['0', 'false', 'off', 'no'].includes(
 function hasPerplexityKey(value) {
   if (!value) return false;
   const v = String(value).trim().toLowerCase();
-  return v.length > 0 && !['your_key_here', 'changeme', 'xxx', 'todo'].includes(v);
+  return (
+    v.length > 0 && !['your_key_here', 'changeme', 'xxx', 'todo'].includes(v)
+  );
+}
+
+function assertHttpUrl(raw) {
+  let parsed;
+  try {
+    parsed = new URL(String(raw || ''));
+  } catch {
+    const err = new Error('url must be a valid absolute URL');
+    err.status = 400;
+    throw err;
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    const err = new Error('url must start with http:// or https://');
+    err.status = 400;
+    throw err;
+  }
+  return parsed.toString();
 }
 
 fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 
 const nlpStore = createStore(ARTIFACT_DIR);
+const perplexityReady = hasPerplexityKey(PERPLEXITY_API_KEY);
 
-// Health check
-app.get('/health', (req, res) => {
+app.get('/', (_req, res) => {
   res.json({
-    status: 'ok',
-    model: PERPLEXITY_MODEL,
-    nlp: {
-      enabled: nlpEnabled,
-      mode: 'operational',
-      therapy: false,
+    service: 'auto-screen-perplexity',
+    mode: {
+      screenshots: true,
+      perplexity: perplexityReady,
+      nlp: nlpEnabled,
+      nlpTherapy: false,
+    },
+    links: {
+      health: '/health',
+      capture: 'POST /capture',
+      nlpMeta: '/nlp/meta',
+      nlpBoard: '/nlp/board',
+      nlpMorning: 'POST /nlp/morning',
     },
   });
 });
 
-// Capture a screenshot of a given URL.
+app.get('/health', (_req, res) => {
+  const counts = nlpEnabled ? nlpStore.counts() : null;
+  res.json({
+    status: 'ok',
+    model: PERPLEXITY_MODEL,
+    perplexity: perplexityReady,
+    nlp: {
+      enabled: nlpEnabled,
+      mode: 'operational',
+      therapy: false,
+      cycles: counts,
+    },
+  });
+});
+
 async function captureScreenshot(url) {
   const context = await chromium.launchPersistentContext(PLAYWRIGHT_PROFILE_DIR, {
     headless: true,
@@ -70,7 +108,6 @@ async function captureScreenshot(url) {
   }
 }
 
-// Ask the Perplexity API a question.
 async function askPerplexity(prompt) {
   const resp = await fetch(PERPLEXITY_URL, {
     method: 'POST',
@@ -91,38 +128,45 @@ async function askPerplexity(prompt) {
 
 // POST /capture { "url": "https://...", "prompt": "optional" }
 app.post('/capture', async (req, res) => {
-  const { url, prompt } = req.body || {};
-  if (!url) {
-    return res.status(400).json({ error: 'url is required' });
-  }
   try {
+    const { prompt } = req.body || {};
+    if (!req.body?.url) {
+      return res.status(400).json({ error: 'url is required' });
+    }
+    const url = assertHttpUrl(req.body.url);
     const screenshotPath = await captureScreenshot(url);
     let analysis = null;
-    if (prompt && hasPerplexityKey(PERPLEXITY_API_KEY)) {
+    if (prompt && perplexityReady) {
       analysis = await askPerplexity(prompt);
     }
     res.json({
       screenshot: screenshotPath,
       minConfidence: Number(MIN_CONFIDENCE),
       analysis,
+      analysisSkipped: Boolean(prompt) && !perplexityReady,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
-// Операционный NLP для коллектива (не терапия)
 app.use(
   '/nlp',
   createNlpRouter({
     store: nlpStore,
     askPerplexity,
     enabled: nlpEnabled,
-    hasApiKey: hasPerplexityKey(PERPLEXITY_API_KEY),
+    hasApiKey: perplexityReady,
   })
 );
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(err.status || 500).json({ error: err.message || 'internal error' });
+});
 
 app.listen(Number(PORT), () => {
   console.log(`auto-screen-perplexity listening on port ${PORT}`);
   console.log(`operational NLP: ${nlpEnabled ? 'ON' : 'OFF'} (NLP_STAFF_CYCLE)`);
+  console.log(`perplexity: ${perplexityReady ? 'READY' : 'OFF'}`);
 });
