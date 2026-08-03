@@ -4,21 +4,38 @@
 
 This repo is a single Node.js service (`auto-screen-perplexity`): an Express API that
 captures full-page screenshots of URLs via Playwright (headless Chromium) and optionally
-analyzes them with the Perplexity API. There is no database and no frontend.
+analyzes them with the Perplexity API. It also exposes **operational NLP for collectives**
+(WFO/TOTE staff cycles) under `/nlp/*` — explicitly not therapy. There is no database
+and no frontend; NLP cycles are stored as JSON files under `ARTIFACT_DIR/nlp-cycles/`.
 
 ### Running the service
 - Dev (hot reload): `npm run dev` (uses `node --watch`). Prod-style: `npm start`.
 - Listens on `http://localhost:8787` (`PORT` env var).
 - A `.env` is required at runtime only for behavior tuning; the app starts fine without
   real values. Copy it with `cp .env.example .env`. `PERPLEXITY_API_KEY` is OPTIONAL —
-  it is only used by `POST /capture` when a `prompt` is included in the request body.
-  Without it, screenshot capture still works and `analysis` is returned as `null`.
+  it is only used by `POST /capture` when a `prompt` is included in the request body,
+  and by `/nlp/*` when the body has `"ai": true`. Without it, screenshot capture and
+  local NLP cycles still work; AI enrichment is skipped.
+- `NLP_STAFF_CYCLE` defaults to on (`1`). Set `0`/`false`/`off` to disable `/nlp/*`
+  (returns 503).
 
 ### Testing the core flow (no GUI)
 This is a headless API service; test it with curl, not a browser:
-- `curl http://localhost:8787/health` → `{"status":"ok","model":"sonar"}`
+- `curl http://localhost:8787/health` → includes `nlp.enabled` / `therapy: false`
 - `curl -X POST http://localhost:8787/capture -H "Content-Type: application/json" -d '{"url":"https://example.com"}'`
   → returns the saved screenshot path (under `ARTIFACT_DIR`, default `./artifacts`).
+- `curl http://localhost:8787/nlp/meta` → operational NLP module metadata
+- `curl -X POST http://localhost:8787/nlp/morning -H "Content-Type: application/json" -d '{"roster":[{"staff":"Альбина","focus":"сдать лоты"}]}'`
+- `curl http://localhost:8787/nlp/models` → catalog (wfo, goal-path, score, ecology, clarify, disney, chunking, pack)
+- `curl -X POST http://localhost:8787/nlp/models/pack -H "Content-Type: application/json" -d '{"goal":"Сдать 3 лота","owner":"Альбина","startCycle":true,"staff":"Альбина"}'`
+- `curl -X POST http://localhost:8787/nlp/okr -H "Content-Type: application/json" -d '{"goal":"Сдать 3 лота","owner":"Альбина"}'`
+- `curl http://localhost:8787/nlp/digest`
+- `curl http://localhost:8787/nlp/skills` → NLP-master skills for AI employees (work-only)
+- `curl -X POST http://localhost:8787/nlp/skills/pack -H "Content-Type: application/json" -d '{"role":"sales","staff":"Альбина"}'`
+- Turnkey: with server up, `npm run nlp:bootstrap` then `npm run nlp:smoke`.
+  Or `KEEP_SERVER=1 npm run nlp:ready` (auto-starts server if needed, bootstrap + smoke).
+- `curl -X POST http://localhost:8787/nlp/bootstrap -H "Content-Type: application/json" -d '{}'`
+  seeds company OKR, staff cycles, NLP-master skill prompts.
 
 ### Non-obvious caveats
 - Playwright browser deps: this VM runs Ubuntu Noble, where `npx playwright install --with-deps chromium`

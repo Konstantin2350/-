@@ -1,7 +1,7 @@
 {
   "name": "auto-screen-perplexity",
   "version": "1.0.0",
-  "description": "Авто скрин для perplexity: Playwright screenshot service that queries the Perplexity API",
+  "description": "Авто скрин для perplexity + операционный NLP/OKR для коллектива (под ключ)",
   "main": "src/index.js",
   "type": "commonjs",
   "engines": {
@@ -9,7 +9,10 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "nlp:smoke": "node scripts/nlp-smoke.js",
+    "nlp:bootstrap": "node scripts/nlp-bootstrap.js",
+    "nlp:ready": "node scripts/nlp-ready.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
