@@ -15,6 +15,17 @@ const {
   buildStaffCyclePrompt,
   SYSTEM_BOUNDARY,
 } = require('./prompts');
+const {
+  MODEL_CATALOG,
+  buildWfoModel,
+  buildGoalPathModel,
+  buildScoreModel,
+  buildEcologyModel,
+  buildClarifyModel,
+  buildDisneyModel,
+  buildChunkingModel,
+  buildModelPack,
+} = require('./models');
 
 function tryParseJsonContent(text) {
   if (!text || typeof text !== 'string') return null;
@@ -74,10 +85,20 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
       enabled,
       perplexity: Boolean(hasApiKey),
       boundary: SYSTEM_BOUNDARY,
+      models: MODEL_CATALOG.map((m) => m.id),
       endpoints: [
         'GET /nlp/meta',
         'GET /nlp/board',
         'POST /nlp/morning',
+        'GET /nlp/models',
+        'POST /nlp/models/wfo',
+        'POST /nlp/models/goal-path',
+        'POST /nlp/models/score',
+        'POST /nlp/models/ecology',
+        'POST /nlp/models/clarify',
+        'POST /nlp/models/disney',
+        'POST /nlp/models/chunking',
+        'POST /nlp/models/pack',
         'POST /nlp/wfo',
         'POST /nlp/staff-cycle',
         'POST /nlp/cycle',
@@ -102,6 +123,84 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
   }
 
   router.use(guard);
+
+  // Каталог и эндпоинты операционных моделей
+  router.get('/models', (_req, res) => {
+    res.json({
+      therapy: false,
+      models: MODEL_CATALOG,
+      usage:
+        'Выберите модель под задачу или вызовите POST /nlp/models/pack для полного пакета',
+    });
+  });
+
+  function runModel(builder) {
+    return (req, res) => {
+      try {
+        const result = builder(req.body || {});
+        res.json(result);
+      } catch (err) {
+        res.status(err.status || 500).json({ error: err.message });
+      }
+    };
+  }
+
+  router.post('/models/wfo', runModel(buildWfoModel));
+  router.post('/models/goal-path', runModel(buildGoalPathModel));
+  router.post('/models/score', runModel(buildScoreModel));
+  router.post('/models/ecology', runModel(buildEcologyModel));
+  router.post('/models/clarify', runModel(buildClarifyModel));
+  router.post('/models/disney', runModel(buildDisneyModel));
+  router.post('/models/chunking', runModel(buildChunkingModel));
+
+  // Пакет моделей; опционально сразу стартует TOTE-цикл
+  router.post('/models/pack', (req, res) => {
+    try {
+      const body = req.body || {};
+      const pack = buildModelPack(body);
+      let cycle = null;
+      if (body.startCycle) {
+        const plan = {
+          staff: body.staff || body.owner || pack.summary.owner || 'команда',
+          owner: pack.summary.owner || body.owner || body.staff || 'команда',
+          deadline: body.deadline || null,
+          notes: body.present || body.symptom || null,
+          wfo: pack.models.wfo.wfo,
+          todayTest: pack.summary.firstTest,
+        };
+        const reuseActive = body.reuseActive !== false;
+        const existing =
+          reuseActive && body.staff
+            ? store.findActiveByStaff(body.staff)
+            : null;
+        if (existing) {
+          cycle = withRuntimeFlags(
+            store.update(existing.id, {
+              wfo: { ...existing.wfo, ...plan.wfo },
+              nextAction: plan.todayTest,
+              deadline: plan.deadline || existing.deadline,
+              modelsUsed: ['pack', 'wfo', 'goal-path', 'score'],
+            })
+          );
+        } else {
+          cycle = withRuntimeFlags(
+            createCycleFromPlan(store, plan, {
+              kind: body.staff ? 'staff' : 'collective',
+              maxIterations: body.maxIterations,
+              deadline: body.deadline,
+            })
+          );
+          store.update(cycle.id, {
+            modelsUsed: ['pack', 'wfo', 'goal-path', 'score'],
+          });
+          cycle = withRuntimeFlags(store.get(cycle.id));
+        }
+      }
+      res.status(body.startCycle ? 201 : 200).json({ ...pack, cycle });
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
 
   // Доска коллектива для стендапа
   router.get('/board', (req, res) => {
@@ -171,7 +270,7 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
     try {
       const body = req.body || {};
       const useAi = Boolean(body.ai) && hasApiKey;
-      let wfo = buildWfoLocal(body);
+      let model = buildWfoModel(body);
       let analysis = null;
 
       if (useAi) {
@@ -185,23 +284,22 @@ function createNlpRouter({ store, askPerplexity, enabled, hasApiKey }) {
         );
         const aiParsed = tryParseJsonContent(extractPerplexityText(analysis));
         if (aiParsed) {
-          wfo = {
-            ...wfo,
-            ...aiParsed,
-            evidence: aiParsed.evidence || wfo.evidence,
-            resources: aiParsed.resources || wfo.resources,
-            ecology: aiParsed.ecology || wfo.ecology,
-            owner: body.owner || wfo.owner,
-            deadline: body.deadline || wfo.deadline,
-            mode: 'operational',
-            source: 'perplexity',
-          };
+          model = buildWfoModel({
+            ...body,
+            goal: aiParsed.outcome || body.goal,
+            evidence: aiParsed.evidence || body.evidence,
+            resources: aiParsed.resources || body.resources,
+            ecology: aiParsed.ecology || body.ecology,
+            firstTest: aiParsed.firstTest || body.firstTest,
+            successMetric: aiParsed.successMetric || body.successMetric,
+          });
+          model.wfo.source = 'perplexity';
         }
       }
 
-      const check = validateWfo(wfo);
+      const check = validateWfo(model.wfo);
       res.json({
-        wfo,
+        ...model,
         valid: check.ok,
         missing: check.missing,
         analysis: useAi ? analysis : null,

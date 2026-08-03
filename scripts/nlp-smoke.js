@@ -69,7 +69,37 @@ async function main() {
 
   const board = await req('GET', '/nlp/board');
   console.log('board counts', board.board.counts);
-  console.log('OK nlp smoke');
+
+  const models = await req('GET', '/nlp/models');
+  if (!models.models?.some((m) => m.id === 'goal-path')) {
+    throw new Error('goal-path model missing');
+  }
+
+  const pack = await req('POST', '/nlp/models/pack', {
+    goal: 'Сдать 3 пустующих лота на Северной 100',
+    owner: 'Альбина',
+    deadline: '2026-08-17',
+    present: '2 лота пустуют дольше месяца',
+    symptom: 'Нет стабильного потока показов',
+    cause: 'Мало целевых касаний и нет ежедневного теста',
+    startCycle: true,
+    staff: 'Альбина-модели',
+    reuseActive: false,
+  });
+  if (!pack.models?.wfo || !pack.models?.goalPath || !pack.models?.score) {
+    throw new Error('pack incomplete');
+  }
+  if (!pack.cycle?.id) throw new Error('pack startCycle failed');
+
+  const path = await req('POST', '/nlp/models/goal-path', {
+    goal: 'Закрыть 5 тёплых лидов',
+    present: 'Есть база, нет ритма касаний',
+    owner: 'Олег',
+    obstacles: ['Нет скрипта follow-up'],
+  });
+  if (!path.path?.length) throw new Error('goal-path empty');
+
+  console.log('OK nlp smoke + models');
 }
 
 main().catch((err) => {

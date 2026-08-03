@@ -73,6 +73,8 @@ app.get('/', (_req, res) => {
       nlpMeta: '/nlp/meta',
       nlpBoard: '/nlp/board',
       nlpMorning: 'POST /nlp/morning',
+      nlpModels: '/nlp/models',
+      nlpModelPack: 'POST /nlp/models/pack',
     },
   });
 });

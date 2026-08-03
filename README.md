@@ -78,12 +78,36 @@ npm run nlp:smoke
 - `GET /nlp/meta`
 - `GET /nlp/board` — стендап-доска (STALL/OVERDUE)
 - `POST /nlp/morning` — создать/обновить циклы по ростеру
-- `POST /nlp/wfo` — Well-Formed Outcome
+- `POST /nlp/wfo` — Well-Formed Outcome + чеклист
 - `POST /nlp/staff-cycle` — план сотрудника (`startCycle`, `reuseActive`)
 - `POST /nlp/cycle` / `GET /nlp/cycle` / `GET /nlp/cycle/:id`
 - `POST /nlp/cycle/:id/advance` — `test` \| `operate` \| `exit` (для `test` нужен `passed`)
 - `POST /nlp/cycle/:id/note` — хвост заметок без смены фазы
 - `POST /nlp/cycle/:id/archive` / `POST /nlp/cycle/:id/reopen`
+
+### Модели достижения целей
+- `GET /nlp/models` — каталог
+- `POST /nlp/models/wfo` — хорошо сформулированный результат + чеклист
+- `POST /nlp/models/goal-path` — модель достижения цели (сейчас → вехи → результат)
+- `POST /nlp/models/score` — SCORE (симптом/причина/результат/ресурсы/эффект)
+- `POST /nlp/models/ecology` — экологическая проверка
+- `POST /nlp/models/clarify` — уточняющие вопросы к размытой цели
+- `POST /nlp/models/disney` — Мечтатель / Реалист / Критик
+- `POST /nlp/models/chunking` — крупнее смысл / конкретнее шаги
+- `POST /nlp/models/pack` — все модели сразу; `"startCycle": true` запускает TOTE
+
+```bash
+curl -X POST http://localhost:8787/nlp/models/pack \
+  -H "Content-Type: application/json" \
+  -d '{
+    "goal":"Сдать 3 пустующих лота на Северной 100",
+    "owner":"Альбина",
+    "deadline":"2026-08-17",
+    "present":"2 лота пустуют дольше месяца",
+    "startCycle":true,
+    "staff":"Альбина"
+  }'
+```
 
 Опция `"ai": true` на wfo/staff-cycle/advance — обогащение через Perplexity, если ключ задан.
 

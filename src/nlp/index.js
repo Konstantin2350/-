@@ -4,4 +4,5 @@ module.exports = {
   ...require('./wfo'),
   ...require('./tote'),
   ...require('./prompts'),
+  ...require('./models'),
 };
