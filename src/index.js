@@ -26,6 +26,12 @@ const nlpEnabled = !['0', 'false', 'off', 'no'].includes(
   String(NLP_STAFF_CYCLE).toLowerCase()
 );
 
+function hasPerplexityKey(value) {
+  if (!value) return false;
+  const v = String(value).trim().toLowerCase();
+  return v.length > 0 && !['your_key_here', 'changeme', 'xxx', 'todo'].includes(v);
+}
+
 fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
 
@@ -92,7 +98,7 @@ app.post('/capture', async (req, res) => {
   try {
     const screenshotPath = await captureScreenshot(url);
     let analysis = null;
-    if (prompt && PERPLEXITY_API_KEY) {
+    if (prompt && hasPerplexityKey(PERPLEXITY_API_KEY)) {
       analysis = await askPerplexity(prompt);
     }
     res.json({
@@ -112,7 +118,7 @@ app.use(
     store: nlpStore,
     askPerplexity,
     enabled: nlpEnabled,
-    hasApiKey: Boolean(PERPLEXITY_API_KEY),
+    hasApiKey: hasPerplexityKey(PERPLEXITY_API_KEY),
   })
 );
 
