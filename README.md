@@ -1,13 +1,14 @@
 # Авто скрин для perplexity
 
-Node.js-сервис, который делает скриншоты страниц через Playwright и анализирует их через Perplexity API.
+Node.js-сервис, который делает скриншоты страниц через Playwright и анализирует их через Perplexity API.  
+Также содержит **операционный NLP для коллектива** (WFO/TOTE) — это про рабочие цели и циклы проверки, **не терапия**.
 
 ## Стек
 
 - Node.js >= 18
 - Express (HTTP API)
 - Playwright (chromium, скриншоты)
-- Perplexity API (модель `sonar`)
+- Perplexity API (модель `sonar`, опционально)
 
 ## Настройка
 
@@ -24,8 +25,9 @@ cp .env.example .env
 | `PERPLEXITY_MODEL` | Модель | `sonar` |
 | `MIN_CONFIDENCE` | Порог уверенности | `0.78` |
 | `PLAYWRIGHT_PROFILE_DIR` | Каталог профиля Playwright | `./pw-profile` |
-| `ARTIFACT_DIR` | Каталог для скриншотов | `./artifacts` |
+| `ARTIFACT_DIR` | Каталог для скриншотов и NLP-циклов | `./artifacts` |
 | `PORT` | Порт сервиса | `8787` |
+| `NLP_STAFF_CYCLE` | Включить операционный NLP (`1`/`0`) | `1` |
 
 ## Запуск локально
 
@@ -48,7 +50,7 @@ docker run -p 8787:8787 --env-file .env auto-screen
 
 ### `GET /health`
 
-Проверка состояния сервиса.
+Проверка состояния сервиса (включая статус NLP).
 
 ### `POST /capture`
 
@@ -60,15 +62,76 @@ curl -X POST http://localhost:8787/capture \
   -d '{"url": "https://example.com", "prompt": "Опиши что на странице"}'
 ```
 
-Ответ содержит путь к сохранённому скриншоту и результат анализа.
+### Операционный NLP (не терапия)
+
+Граница: только цели, критерии, тесты и коррекции процесса. Без психологии/лечения.
+
+#### `GET /nlp/meta`
+
+Метаданные модуля и список эндпоинтов.
+
+#### `POST /nlp/wfo`
+
+Оформить Well-Formed Outcome (локально; с `"ai": true` — через Perplexity, если есть ключ).
+
+```bash
+curl -X POST http://localhost:8787/nlp/wfo \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Сдать 3 пустующих лота на Северной 100","owner":"Альбина","deadline":"2026-08-17"}'
+```
+
+#### `POST /nlp/staff-cycle`
+
+Быстрый операционный цикл для сотрудника/роли. `"startCycle": true` сразу создаёт TOTE-цикл.
+
+```bash
+curl -X POST http://localhost:8787/nlp/staff-cycle \
+  -H "Content-Type: application/json" \
+  -d '{"staff":"Альбина","focus":"сдать пустующие на Северной 100","startCycle":true}'
+```
+
+#### `POST /nlp/cycle` / `POST /nlp/cycle/:id/advance`
+
+Создать TOTE-цикл и шагать по нему: `test` → `operate` → `test` → `exit`.
+
+```bash
+# создать
+curl -X POST http://localhost:8787/nlp/cycle \
+  -H "Content-Type: application/json" \
+  -d '{"goal":"Закрыть 3 договора аренды","owner":"команда","successMetric":"3 подписанных договора"}'
+
+# тест не пройден
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"test","passed":false,"note":"0 показов за день"}'
+
+# коррекция
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"operate","action":"10 целевых касаний + 2 показа"}'
+
+# тест пройден → exit
+curl -X POST http://localhost:8787/nlp/cycle/<id>/advance \
+  -H "Content-Type: application/json" \
+  -d '{"eventType":"test","passed":true,"note":"3 договора"}'
+```
+
+Циклы сохраняются в `ARTIFACT_DIR/nlp-cycles/` (файлы JSON, без БД).
 
 ## Структура проекта
 
 ```
 .
-├── src/index.js     # Express + Playwright + Perplexity
-├── Dockerfile       # образ на базе Playwright
-├── package.json     # зависимости и скрипты
-├── .env.example     # пример конфигурации
+├── src/
+│   ├── index.js          # Express + Playwright + Perplexity
+│   └── nlp/              # Операционный NLP (WFO/TOTE)
+│       ├── router.js
+│       ├── wfo.js
+│       ├── tote.js
+│       ├── prompts.js
+│       └── store.js
+├── Dockerfile
+├── package.json
+├── .env.example
 └── .gitignore
 ```

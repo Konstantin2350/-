@@ -1,13 +1,15 @@
 // src/index.js
-// Авто скрин для perplexity
+// Авто скрин для perplexity + операционный NLP для коллектива
 // Express service that takes a screenshot of a URL via Playwright
 // and asks the Perplexity API to describe / analyze the page.
+// Also exposes operational NLP (WFO/TOTE) routes — not therapy.
 
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { chromium } = require('playwright');
+const { createStore, createNlpRouter } = require('./nlp');
 
 const {
   PERPLEXITY_API_KEY,
@@ -17,7 +19,12 @@ const {
   PLAYWRIGHT_PROFILE_DIR = './pw-profile',
   ARTIFACT_DIR = './artifacts',
   PORT = '8787',
+  NLP_STAFF_CYCLE = '1',
 } = process.env;
+
+const nlpEnabled = !['0', 'false', 'off', 'no'].includes(
+  String(NLP_STAFF_CYCLE).toLowerCase()
+);
 
 fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
@@ -25,9 +32,19 @@ fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
 const app = express();
 app.use(express.json());
 
+const nlpStore = createStore(ARTIFACT_DIR);
+
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', model: PERPLEXITY_MODEL });
+  res.json({
+    status: 'ok',
+    model: PERPLEXITY_MODEL,
+    nlp: {
+      enabled: nlpEnabled,
+      mode: 'operational',
+      therapy: false,
+    },
+  });
 });
 
 // Capture a screenshot of a given URL.
@@ -88,6 +105,18 @@ app.post('/capture', async (req, res) => {
   }
 });
 
+// Операционный NLP для коллектива (не терапия)
+app.use(
+  '/nlp',
+  createNlpRouter({
+    store: nlpStore,
+    askPerplexity,
+    enabled: nlpEnabled,
+    hasApiKey: Boolean(PERPLEXITY_API_KEY),
+  })
+);
+
 app.listen(Number(PORT), () => {
   console.log(`auto-screen-perplexity listening on port ${PORT}`);
+  console.log(`operational NLP: ${nlpEnabled ? 'ON' : 'OFF'} (NLP_STAFF_CYCLE)`);
 });
