@@ -170,7 +170,17 @@ async function main() {
   });
   if (!applied.nextAction) throw new Error('skill apply missing nextAction');
 
-  console.log('OK nlp smoke + models + okr/checkin + master skills');
+  const boot = await req('POST', '/nlp/bootstrap', {
+    companyGoal: 'Smoke bootstrap goal',
+    roster: [
+      { staff: 'SmokeBot', role: 'ops', focus: 'закрыть операционный тест' },
+    ],
+    reuseActive: false,
+  });
+  if (!boot.ok || !boot.employees?.length) throw new Error('bootstrap failed');
+  if (!boot.company?.okrId) throw new Error('bootstrap company okr missing');
+
+  console.log('OK nlp smoke + models + okr/checkin + master skills + bootstrap');
 }
 
 main().catch((err) => {

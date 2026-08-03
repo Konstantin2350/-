@@ -31,7 +31,30 @@ npm start
 | `PORT` | Порт | `8787` |
 | `NLP_STAFF_CYCLE` | Операционный NLP `1`/`0` | `1` |
 
-## Под ключ: день команды
+## Под ключ (чтобы работало)
+
+```bash
+cp .env.example .env
+npm install
+npm start                 # терминал 1
+npm run nlp:ready         # терминал 2: bootstrap + smoke
+# или одной командой с авто-стартом сервера:
+# KEEP_SERVER=1 npm run nlp:ready
+```
+
+`POST /nlp/bootstrap` одним запросом создаёт:
+- цель компании + OKR
+- сотрудников с ролями и systemPrompt NLP-мастера
+- личные OKR + TOTE-циклы
+- дайджест и инструкцию «как работать дальше»
+
+```bash
+curl -X POST http://localhost:8787/nlp/bootstrap \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+## День команды
 
 ```bash
 # 1) Утренний запуск циклов по ростеру (reuseActive не плодит дубли)

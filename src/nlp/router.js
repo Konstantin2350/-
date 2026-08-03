@@ -42,6 +42,7 @@ const {
   buildMasterPlaybook,
   ROLE_PRESETS,
 } = require('./masterSkills');
+const { runBootstrap } = require('./bootstrap');
 
 function tryParseJsonContent(text) {
   if (!text || typeof text !== 'string') return null;
@@ -126,6 +127,7 @@ function createNlpRouter({ store, okrStore, askPerplexity, enabled, hasApiKey })
         'POST /nlp/skills/pack',
         'POST /nlp/skills/playbook',
         'POST /nlp/skills/apply',
+        'POST /nlp/bootstrap',
         'GET /nlp/models',
         'POST /nlp/models/wfo',
         'POST /nlp/models/goal-path',
@@ -203,6 +205,23 @@ function createNlpRouter({ store, okrStore, askPerplexity, enabled, hasApiKey })
   router.post('/skills/apply', (req, res) => {
     try {
       res.json(applyMasterSkill(req.body || {}));
+    } catch (err) {
+      res.status(err.status || 500).json({ error: err.message });
+    }
+  });
+
+  // Под ключ: команда + OKR + навыки + циклы одним запросом
+  router.post('/bootstrap', (req, res) => {
+    try {
+      if (!okrStore) {
+        return res.status(503).json({ error: 'okr store unavailable' });
+      }
+      const result = runBootstrap({
+        store,
+        okrStore,
+        body: req.body || {},
+      });
+      res.status(201).json(result);
     } catch (err) {
       res.status(err.status || 500).json({ error: err.message });
     }

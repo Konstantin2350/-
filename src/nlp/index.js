@@ -9,4 +9,5 @@ module.exports = {
   ...require('./checkin'),
   suggestOkrsFromGoal: require('./okr').suggestOkrsFromGoal,
   ...require('./masterSkills'),
+  runBootstrap: require('./bootstrap').runBootstrap,
 };

@@ -32,7 +32,10 @@ This is a headless API service; test it with curl, not a browser:
 - `curl http://localhost:8787/nlp/digest`
 - `curl http://localhost:8787/nlp/skills` → NLP-master skills for AI employees (work-only)
 - `curl -X POST http://localhost:8787/nlp/skills/pack -H "Content-Type: application/json" -d '{"role":"sales","staff":"Альбина"}'`
-- With the server running: `npm run nlp:smoke` exercises cycles + models + OKR/check-in + master skills.
+- Turnkey: with server up, `npm run nlp:bootstrap` then `npm run nlp:smoke`.
+  Or `KEEP_SERVER=1 npm run nlp:ready` (auto-starts server if needed, bootstrap + smoke).
+- `curl -X POST http://localhost:8787/nlp/bootstrap -H "Content-Type: application/json" -d '{}'`
+  seeds company OKR, staff cycles, NLP-master skill prompts.
 
 ### Non-obvious caveats
 - Playwright browser deps: this VM runs Ubuntu Noble, where `npx playwright install --with-deps chromium`

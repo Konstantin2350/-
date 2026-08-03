@@ -81,6 +81,7 @@ app.get('/', (_req, res) => {
       nlpOkr: 'POST /nlp/okr',
       nlpSkills: '/nlp/skills',
       nlpSkillsPack: 'POST /nlp/skills/pack',
+      nlpBootstrap: 'POST /nlp/bootstrap',
     },
   });
 });
