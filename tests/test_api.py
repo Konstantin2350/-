@@ -118,7 +118,30 @@ def test_versioned_knowledge_rag_returns_citation(tmp_path):
     assert answer.status_code == 200
     assert answer.json()["citations"]
     assert answer.json()["citations"][0]["title"] == "Регламент продаж"
+    assert {item["version"] for item in answer.json()["citations"]} == {2}
     assert "[1]" in answer.json()["answer"]
+
+
+def test_local_rag_ranks_lexically_relevant_chunk_first(tmp_path):
+    document = (
+        ("Архитектура и возможности агентов. " * 80)
+        + "Для запуска через Docker выполните docker compose up --build. "
+        + ("Настройки CRM и роли сотрудников. " * 80)
+    )
+    with make_client(tmp_path) as client:
+        client.post(
+            "/v1/knowledge/documents",
+            files={"file": ("manual.md", document, "text/markdown")},
+            data={"title": "Эксплуатация"},
+        )
+        response = client.post(
+            "/v1/knowledge/query",
+            json={"question": "Как запустить через Docker?"},
+        )
+
+    top_excerpt = response.json()["citations"][0]["excerpt"].lower()
+    assert "docker compose up" in top_excerpt
+    assert not top_excerpt.startswith(("ость", "тура"))
 
 
 def test_chat_handoff_keeps_full_history(tmp_path):

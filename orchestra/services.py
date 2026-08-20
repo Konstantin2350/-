@@ -27,10 +27,43 @@ from orchestra.schemas import (
 
 
 TOKEN_RE = re.compile(r"[\wа-яё-]+", re.IGNORECASE)
+SEARCH_STOPWORDS = {
+    "а", "без", "в", "для", "до", "и", "из", "как", "к", "на", "о", "от",
+    "по", "при", "с", "у", "через", "что", "кто", "the", "a", "an", "how",
+}
 
 
 def tokens(text: str) -> list[str]:
     return [word.lower() for word in TOKEN_RE.findall(text)]
+
+
+def lexical_roots(text: str) -> set[str]:
+    """Lightweight language-agnostic roots improve local search without ML models."""
+    return {
+        word[:5] if len(word) > 6 else word
+        for word in tokens(text)
+        if word not in SEARCH_STOPWORDS
+    }
+
+
+def focused_excerpt(text: str, query_roots: set[str], limit: int = 500) -> str:
+    lowered = text.lower()
+    positions = sorted(
+        position
+        for root in query_roots
+        if (position := lowered.find(root)) >= 0
+    )
+    focus = positions[len(positions) // 2] if positions else 0
+    start = max(0, focus - limit // 3)
+    if start:
+        boundary = text.find(" ", start)
+        start = boundary + 1 if boundary >= 0 else start
+    excerpt = text[start : start + limit]
+    if start + limit < len(text):
+        boundary = excerpt.rfind(" ")
+        if boundary > limit // 2:
+            excerpt = excerpt[:boundary]
+    return excerpt.strip()
 
 
 class LLMClient:
@@ -122,7 +155,9 @@ class KnowledgeService:
             chunks.append(cleaned[start:end].strip())
             if end == len(cleaned):
                 break
-            start = end - overlap
+            candidate = end - overlap
+            next_boundary = cleaned.find(" ", candidate, end)
+            start = next_boundary + 1 if next_boundary != -1 else end
         return chunks
 
     async def ingest(
@@ -150,13 +185,21 @@ class KnowledgeService:
 
     async def search(self, question: str, limit: int = 5) -> list[Citation]:
         query_embedding = self.embeddings.encode(question)
-        query_words = set(tokens(question))
+        query_words = lexical_roots(question)
         ranked: list[tuple[float, Any, Any]] = []
-        for chunk, document in await self.db.all_chunks():
+        stored = await self.db.all_chunks()
+        latest_versions: dict[str, int] = {}
+        for _, document in stored:
+            latest_versions[document.title] = max(
+                latest_versions.get(document.title, 0), document.version
+            )
+        for chunk, document in stored:
+            if document.version != latest_versions[document.title]:
+                continue
             semantic = self.embeddings.similarity(query_embedding, chunk.embedding)
-            chunk_words = set(tokens(chunk.text))
+            chunk_words = lexical_roots(chunk.text)
             lexical = len(query_words & chunk_words) / max(len(query_words), 1)
-            score = 0.7 * semantic + 0.3 * lexical
+            score = 0.35 * max(semantic, 0) + 0.65 * lexical
             ranked.append((score, chunk, document))
         ranked.sort(key=lambda item: item[0], reverse=True)
         return [
@@ -165,7 +208,7 @@ class KnowledgeService:
                 title=document.title,
                 version=document.version,
                 chunk=chunk.position,
-                excerpt=chunk.text[:500],
+                excerpt=focused_excerpt(chunk.text, query_words),
                 score=round(score, 4),
             )
             for score, chunk, document in ranked[:limit]
