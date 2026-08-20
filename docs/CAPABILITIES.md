@@ -8,6 +8,10 @@
 
 ## HIGH
 
+ИИ-сотрудники получают компетенции из `config/ai_employees.json`; каталог и
+вызов доступны через `/v1/employees`. Финансовая роль закреплена за Еленой,
+а платежные поручения всегда создают human-approval action.
+
 | Направление | Реализация |
 | --- | --- |
 | CRM Automation | NER, безопасные updates/suggestions, обучаемая logistic-модель сделок, spam-фильтр, RFM |

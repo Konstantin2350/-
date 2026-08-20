@@ -32,6 +32,7 @@ from orchestra.capabilities import (
     TrainingService,
 )
 from orchestra.config import Settings, get_settings
+from orchestra.employees import EmployeeRegistry
 from orchestra.infrastructure import ConversationMemory, Database
 from orchestra.integrations import MCP_TOOLS, Bitrix24Client
 from orchestra.observability import AGENT_RUNS, metrics_middleware, metrics_response
@@ -47,6 +48,7 @@ from orchestra.schemas import (
     DealHistoryItem,
     DealModelTrainRequest,
     DealPredictRequest,
+    EmployeeInvokeRequest,
     HandoffClaimRequest,
     HandoffReplyRequest,
     KnowledgeQuery,
@@ -88,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     content = ContentService(orchestrator.llm)
     training = TrainingService(knowledge.embeddings)
     analytics = AnalyticsService()
+    employees = EmployeeRegistry(settings, orchestrator)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -115,6 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.orchestrator = orchestrator
     app.state.bitrix = bitrix
+    app.state.employees = employees
 
     def action_payload(action) -> dict[str, Any]:
         return {
@@ -311,6 +315,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await orchestrator.execute(body)
         AGENT_RUNS.labels(response.agent, str(response.requires_human).lower()).inc()
         return response
+
+    @app.get("/v1/employees", tags=["employees"])
+    async def list_employees():
+        return {"employees": employees.list()}
+
+    @app.get("/v1/employees/{employee_id}", tags=["employees"])
+    async def get_employee(employee_id: str):
+        employee = employees.get(employee_id)
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        return employee
+
+    @app.post("/v1/employees/{employee_id}/invoke", tags=["employees"])
+    async def invoke_employee(employee_id: str, body: EmployeeInvokeRequest, request: Request):
+        principal = request.state.principal
+        try:
+            return await employees.invoke(
+                employee_id,
+                body,
+                principal.user_id,
+                principal.tenant_id,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Employee not found") from error
 
     @app.post("/v1/jobs/agent", tags=["agents"], status_code=202)
     async def enqueue_agent(body: AgentRequest, request: Request):

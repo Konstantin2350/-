@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, HttpUrl
 
-AgentName = Literal["crm", "calls", "chat", "knowledge", "tasks", "content"]
+AgentName = Literal["crm", "calls", "chat", "knowledge", "tasks", "content", "finance"]
 
 
 class Citation(BaseModel):
@@ -33,6 +33,26 @@ class AgentResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     actions: list[dict[str, Any]] = Field(default_factory=list)
     requires_human: bool = False
+
+
+class EmployeeProfile(BaseModel):
+    id: str
+    name: str
+    role: str
+    description: str
+    primary_agent: AgentName | None = None
+    skills: list[str]
+
+
+class EmployeeInvokeRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=30_000)
+    session_id: str = Field(default_factory=lambda: str(uuid4()), max_length=128)
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class EmployeeResponse(BaseModel):
+    employee: EmployeeProfile
+    result: AgentResponse
 
 
 class CRMExtractRequest(BaseModel):

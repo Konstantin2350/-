@@ -1,0 +1,115 @@
+[
+  {
+    "id": "director",
+    "name": "Директор Оркестра",
+    "role": "Координатор ИИ-сотрудников",
+    "description": "Понимает запрос и направляет его профильному сотруднику.",
+    "primary_agent": null,
+    "skills": [
+      "intent_routing",
+      "multi_step_coordination",
+      "human_approval",
+      "business_processes",
+      "executive_summary"
+    ]
+  },
+  {
+    "id": "sales",
+    "name": "Продажи",
+    "role": "ИИ-менеджер по продажам",
+    "description": "Ведёт первичную квалификацию, фиксирует потребности и готовит следующий шаг.",
+    "primary_agent": "crm",
+    "skills": [
+      "crm_field_extraction",
+      "deal_prediction",
+      "repeat_sales_rfm",
+      "lead_qualification",
+      "safe_crm_updates"
+    ]
+  },
+  {
+    "id": "call_coach",
+    "name": "Тренер звонков",
+    "role": "ИИ-наставник менеджеров",
+    "description": "Разбирает разговоры, проверяет скрипты и формирует обратную связь.",
+    "primary_agent": "calls",
+    "skills": [
+      "call_transcription",
+      "sentiment_and_prosody",
+      "sales_script_scoring",
+      "action_items",
+      "manager_coaching"
+    ]
+  },
+  {
+    "id": "support",
+    "name": "Поддержка",
+    "role": "ИИ-специалист поддержки",
+    "description": "Отвечает клиентам по базе знаний и передаёт сложные обращения человеку.",
+    "primary_agent": "chat",
+    "skills": [
+      "multi_channel_chat",
+      "context_memory",
+      "knowledge_answers",
+      "operator_handoff",
+      "support_triage"
+    ]
+  },
+  {
+    "id": "knowledge",
+    "name": "База знаний",
+    "role": "ИИ-эксперт по регламентам",
+    "description": "Ищет актуальную информацию и отвечает со ссылками на источники.",
+    "primary_agent": "knowledge",
+    "skills": [
+      "document_ingestion",
+      "semantic_search",
+      "reranking",
+      "source_citations",
+      "document_versioning"
+    ]
+  },
+  {
+    "id": "projects",
+    "name": "Проекты",
+    "role": "ИИ-координатор задач",
+    "description": "Создаёт задачи, чек-листы, рекомендует исполнителей и выявляет риски.",
+    "primary_agent": "tasks",
+    "skills": [
+      "natural_language_tasks",
+      "checklist_generation",
+      "assignee_recommendation",
+      "deadline_risk",
+      "project_digest"
+    ]
+  },
+  {
+    "id": "content",
+    "name": "Контент",
+    "role": "ИИ-бизнес-редактор",
+    "description": "Создаёт письма, описания, резюме встреч и презентации.",
+    "primary_agent": "content",
+    "skills": [
+      "business_writing",
+      "meta_generation",
+      "meeting_summary",
+      "brainstorming",
+      "pptx_export"
+    ]
+  },
+  {
+    "id": "elena_finance",
+    "name": "Елена",
+    "role": "Финансы",
+    "description": "Анализирует суммы, оплаты, бюджеты и финансовые риски без самостоятельного перевода денег.",
+    "primary_agent": "finance",
+    "skills": [
+      "amount_extraction",
+      "income_expense_classification",
+      "payment_deadlines",
+      "budget_risk",
+      "financial_summary",
+      "mandatory_payment_approval"
+    ]
+  }
+]

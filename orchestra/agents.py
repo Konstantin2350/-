@@ -42,6 +42,19 @@ class Orchestrator:
             return requested
         text = message.lower()
         rules: list[tuple[AgentName, tuple[str, ...]]] = [
+            (
+                "finance",
+                (
+                    "финанс",
+                    "бюджет",
+                    "оплат",
+                    "платеж",
+                    "счёт",
+                    "счет",
+                    "расход",
+                    "выручк",
+                ),
+            ),
             ("calls", ("звонок", "разговор", "скрипт продаж", "транскрипт")),
             ("crm", ("сделк", "лид", "клиент", "crm", "повторн")),
             ("tasks", ("задач", "поруч", "дедлайн", "чек-лист", "проект")),
@@ -62,6 +75,7 @@ class Orchestrator:
             "knowledge": self._knowledge,
             "tasks": self._tasks,
             "content": self._content,
+            "finance": self._finance,
         }
         response = await handlers[agent](request)
         stored_actions = []
@@ -176,6 +190,56 @@ class Orchestrator:
                 "Следующий шаг: предложите конкретное действие и срок."
             )
         return AgentResponse(agent="content", answer=generated)
+
+    async def _finance(self, request: AgentRequest) -> AgentResponse:
+        extraction = self.crm.extract(request.message)
+        lowered = request.message.lower()
+        income_words = ("поступ", "выручк", "доход", "оплатил клиент")
+        expense_words = ("расход", "закуп", "оплатить", "списан", "затрат")
+        category = (
+            "income"
+            if any(word in lowered for word in income_words)
+            else "expense"
+            if any(word in lowered for word in expense_words)
+            else "uncertain"
+        )
+        risks = []
+        if any(word in lowered for word in ("просроч", "не хватает", "дефицит")):
+            risks.append("Риск просрочки или дефицита бюджета")
+        payment_requested = any(
+            phrase in lowered for phrase in ("оплатить", "перевести", "провести платеж")
+        )
+        amount = extraction.entities.amount
+        answer = (
+            f"Финансовый запрос классифицирован как {category}. "
+            f"Сумма: {amount if amount is not None else 'не определена'}."
+        )
+        if payment_requested:
+            answer += " Платёж не выполняется без подтверждения ответственного."
+        return AgentResponse(
+            agent="finance",
+            answer=answer,
+            data={
+                "category": category,
+                "amount": amount,
+                "risk_flags": risks,
+                "employee": request.context.get("employee"),
+            },
+            actions=(
+                [
+                    {
+                        "tool": "finance.approval",
+                        "status": "proposed",
+                        "requires_confirmation": True,
+                        "amount": amount,
+                        "request": request.message,
+                    }
+                ]
+                if payment_requested
+                else []
+            ),
+            requires_human=payment_requested or bool(risks),
+        )
 
     async def _chat(self, request: AgentRequest) -> AgentResponse:
         result = await self.chat(

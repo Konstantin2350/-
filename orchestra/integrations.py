@@ -88,7 +88,15 @@ MCP_TOOLS = [
                 "message": {"type": "string"},
                 "agent": {
                     "type": "string",
-                    "enum": ["crm", "calls", "chat", "knowledge", "tasks", "content"],
+                    "enum": [
+                        "crm",
+                        "calls",
+                        "chat",
+                        "knowledge",
+                        "tasks",
+                        "content",
+                        "finance",
+                    ],
                 },
                 "session_id": {"type": "string"},
             },

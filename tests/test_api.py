@@ -607,3 +607,42 @@ def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):
     assert listed.json()["tasks"][0]["title"] == "Подготовить презентацию"
     assert sync.json()["status"] == "proposed"
     assert sync.json()["payload"]["method"] == "tasks.task.add"
+
+
+def test_ai_employees_receive_bitrix_like_skills_and_elena_handles_finance(
+    tmp_path,
+):
+    headers = {"x-api-key": "operator-key"}
+    with make_client(tmp_path, api_keys="operator-key:operator:employees-tenant") as client:
+        catalog = client.get("/v1/employees", headers=headers)
+        elena = client.get("/v1/employees/elena_finance", headers=headers)
+        invoked = client.post(
+            "/v1/employees/elena_finance/invoke",
+            headers=headers,
+            json={"message": ("Нужно оплатить счёт поставщика на сумму 120 000 руб.")},
+        )
+        director = client.post(
+            "/v1/employees/director/invoke",
+            headers=headers,
+            json={"message": "Проанализируй бюджет и расходы за месяц"},
+        )
+
+    ids = {item["id"] for item in catalog.json()["employees"]}
+    assert {
+        "director",
+        "sales",
+        "call_coach",
+        "support",
+        "knowledge",
+        "projects",
+        "content",
+        "elena_finance",
+    } <= ids
+    assert elena.json()["name"] == "Елена"
+    assert elena.json()["role"] == "Финансы"
+    assert "mandatory_payment_approval" in elena.json()["skills"]
+    assert invoked.json()["result"]["agent"] == "finance"
+    assert invoked.json()["result"]["data"]["amount"] == 120000
+    assert invoked.json()["result"]["requires_human"] is True
+    assert invoked.json()["result"]["actions"][0]["action_id"]
+    assert director.json()["result"]["agent"] == "finance"

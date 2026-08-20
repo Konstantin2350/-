@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     max_agent_steps: int = Field(default=8, ge=1, le=20)
     rate_limit_per_minute: int = Field(default=300, ge=10, le=100_000)
     cors_origins: str = ""
+    employee_config_path: str = "config/ai_employees.json"
 
     @field_validator("database_url", mode="before")
     @classmethod
