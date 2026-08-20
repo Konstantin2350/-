@@ -115,10 +115,9 @@ class LLMClient:
 class Embeddings:
     """OpenAI embeddings with deterministic local fallback."""
 
-    dimensions = 256
-
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.dimensions = 256
 
     def local_encode(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
@@ -140,6 +139,7 @@ class Embeddings:
                 json={
                     "model": self.settings.embedding_model,
                     "input": values,
+                    "dimensions": self.dimensions,
                 },
             )
             response.raise_for_status()
@@ -209,13 +209,17 @@ class KnowledgeService:
         return chunks
 
     async def ingest(
-        self, filename: str, content: bytes, title: str | None = None
+        self,
+        filename: str,
+        content: bytes,
+        title: str | None = None,
+        tenant_id: str = "default",
     ) -> KnowledgeDocumentResponse:
         if len(content) > self.settings.max_upload_bytes:
             raise ValueError("Document exceeds configured upload limit")
         resolved_title = title or Path(filename).stem
         content_hash = hashlib.sha256(content).hexdigest()
-        existing = await self.db.existing_document(resolved_title, content_hash)
+        existing = await self.db.existing_document(resolved_title, content_hash, tenant_id)
         if existing:
             document, chunk_count = existing
             return KnowledgeDocumentResponse(
@@ -242,6 +246,7 @@ class KnowledgeService:
                     strict=True,
                 )
             ),
+            tenant_id=tenant_id,
         )
         return KnowledgeDocumentResponse(
             id=as_uuid(document.id),
@@ -251,11 +256,13 @@ class KnowledgeService:
             created_at=document.created_at,
         )
 
-    async def search(self, question: str, limit: int = 5) -> list[Citation]:
+    async def search(
+        self, question: str, limit: int = 5, tenant_id: str = "default"
+    ) -> list[Citation]:
         query_embedding = await self.embeddings.encode(question)
         query_words = lexical_roots(question)
         ranked: list[tuple[float, Any, Any]] = []
-        stored = await self.db.all_chunks()
+        stored = await self.db.search_chunks(tenant_id, query_embedding, limit)
         latest_versions: dict[str, int] = {}
         for _, document in stored:
             latest_versions[document.title] = max(
@@ -283,8 +290,10 @@ class KnowledgeService:
             if score > 0
         ]
 
-    async def answer(self, question: str, limit: int = 5) -> KnowledgeAnswer:
-        citations = await self.search(question, limit)
+    async def answer(
+        self, question: str, limit: int = 5, tenant_id: str = "default"
+    ) -> KnowledgeAnswer:
+        citations = await self.search(question, limit, tenant_id)
         if not citations:
             return KnowledgeAnswer(
                 answer="В базе знаний пока нет подходящей информации.",

@@ -16,6 +16,7 @@ ROLE_LEVELS = {"viewer": 10, "operator": 20, "manager": 30, "admin": 40}
 class Principal:
     user_id: str
     role: str
+    tenant_id: str
     auth_type: str
 
     def can(self, minimum_role: str) -> bool:
@@ -42,14 +43,24 @@ class Authenticator:
             role = payload.get("role", "viewer")
             if role not in ROLE_LEVELS:
                 return None
-            return Principal(str(payload["sub"]), role, "jwt")
+            return Principal(
+                str(payload["sub"]),
+                role,
+                str(payload.get("tenant_id", "default")),
+                "jwt",
+            )
 
-        for configured_key, role in self.settings.api_key_roles.items():
+        for configured_key, credentials in self.settings.api_key_credentials.items():
             if api_key and secrets.compare_digest(api_key, configured_key):
-                return Principal(f"api-key:{role}", role, "api_key")
+                return Principal(
+                    f"api-key:{credentials['role']}",
+                    credentials["role"],
+                    credentials["tenant_id"],
+                    "api_key",
+                )
 
         if not self.settings.api_key_roles and not self.settings.jwt_secret:
-            return Principal("local-development", "admin", "disabled")
+            return Principal("local-development", "admin", "default", "disabled")
         return None
 
     def from_request(self, request: Request) -> Principal | None:
@@ -64,6 +75,7 @@ class RateLimiter:
 
     def __init__(self, settings: Settings) -> None:
         self.limit = settings.rate_limit_per_minute
+        self.production = settings.environment == "production"
         self.redis = Redis.from_url(settings.redis_url) if settings.redis_url else None
         self.local: dict[tuple[str, int], int] = defaultdict(int)
 
@@ -77,7 +89,8 @@ class RateLimiter:
                     await self.redis.expire(key, 65)
                 return count <= self.limit, max(0, self.limit - count)
             except Exception:
-                pass
+                if self.production:
+                    raise
         local_key = (identity, window)
         self.local[local_key] += 1
         if len(self.local) > 10_000:

@@ -20,7 +20,7 @@
 
 | Направление | Реализация |
 | --- | --- |
-| Business Processes | NL → validated DSL, webhooks/event log, Bitrix batch, MCP, Celery |
+| Business Processes | NL → DSL, persisted runtime, approvals/waits, action execution, webhooks, MCP, Celery |
 | Content | Email/product/META/article templates, brainstorming, meeting summary, PPTX |
 | Testing & Training | Question generation, semantic scoring, adaptive difficulty |
 
@@ -43,4 +43,5 @@
   сохраняет версию и метрики, но бизнес должен предоставить размеченные won/lost
   сделки.
 - Действия Bitrix24 используют allowlist методов. Изменение существующего CRM-поля
-  возвращается как suggestion и требует подтверждения.
+  возвращается как suggestion и требует подтверждения. Action Engine хранит
+  переходы `proposed → confirmed → executing → executed/failed`.

@@ -8,15 +8,41 @@ from orchestra.config import Settings
 class Bitrix24Client:
     """Restricted Bitrix24 REST client with native batch support."""
 
-    allowed_prefixes = (
-        "crm.",
-        "tasks.",
-        "task.",
-        "im.",
-        "user.",
-        "calendar.",
-        "bizproc.",
-    )
+    allowed_methods = {
+        "batch",
+        "crm.lead.add",
+        "crm.lead.update",
+        "crm.lead.get",
+        "crm.lead.list",
+        "crm.deal.add",
+        "crm.deal.update",
+        "crm.deal.get",
+        "crm.deal.list",
+        "crm.contact.add",
+        "crm.contact.update",
+        "crm.contact.get",
+        "crm.contact.list",
+        "crm.company.add",
+        "crm.company.update",
+        "crm.company.get",
+        "crm.company.list",
+        "crm.item.add",
+        "crm.item.update",
+        "crm.item.get",
+        "crm.item.list",
+        "crm.timeline.comment.add",
+        "tasks.task.add",
+        "tasks.task.update",
+        "tasks.task.get",
+        "tasks.task.list",
+        "task.checklistitem.add",
+        "im.message.add",
+        "user.get",
+        "calendar.event.add",
+        "calendar.event.update",
+        "calendar.event.get",
+        "bizproc.workflow.start",
+    }
 
     def __init__(self, settings: Settings) -> None:
         self.webhook_url = (
@@ -24,7 +50,7 @@ class Bitrix24Client:
         )
 
     def validate_method(self, method: str) -> None:
-        if method != "batch" and not method.startswith(self.allowed_prefixes):
+        if method not in self.allowed_methods:
             raise ValueError("Bitrix24 method is not allowed")
 
     async def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:

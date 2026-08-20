@@ -20,6 +20,7 @@ class AgentRequest(BaseModel):
     message: str = Field(min_length=1, max_length=30_000)
     session_id: str = Field(default_factory=lambda: str(uuid4()), max_length=128)
     user_id: str = Field(default="anonymous", max_length=128)
+    tenant_id: str = Field(default="default", max_length=128)
     agent: AgentName | None = None
     context: dict[str, Any] = Field(default_factory=dict)
 
@@ -105,6 +106,7 @@ class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=30_000)
     user_id: str = Field(default="anonymous", max_length=128)
+    tenant_id: str = Field(default="default", max_length=128)
     persona: Literal["sales", "support", "onboarding", "auto"] = "auto"
     channel: Literal["web", "bitrix24", "telegram", "whatsapp", "email", "api"] = "api"
 
@@ -116,6 +118,7 @@ class ChatResponse(BaseModel):
     citations: list[Citation] = Field(default_factory=list)
     handoff: bool = False
     handoff_reason: str | None = None
+    handoff_id: UUID | None = None
 
 
 class KnowledgeDocumentResponse(BaseModel):
@@ -166,6 +169,36 @@ class ProcessDefinition(BaseModel):
     name: str
     trigger: str
     steps: list[dict[str, Any]]
+
+
+class ActionCreateRequest(BaseModel):
+    tool: str = Field(min_length=1, max_length=200)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    requires_confirmation: bool = True
+    idempotency_key: str | None = Field(default=None, max_length=255)
+
+
+class ActionConfirmRequest(BaseModel):
+    payload_updates: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessStartRequest(BaseModel):
+    process_id: UUID
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessApprovalRequest(BaseModel):
+    approved: bool = True
+    comment: str | None = Field(default=None, max_length=2_000)
+
+
+class HandoffClaimRequest(BaseModel):
+    operator_id: str | None = Field(default=None, max_length=128)
+
+
+class HandoffReplyRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=30_000)
+    close: bool = False
 
 
 class ProcessNLRequest(BaseModel):
@@ -222,6 +255,29 @@ class ProjectTask(BaseModel):
 class ProjectDigestRequest(BaseModel):
     project: str
     tasks: list[ProjectTask]
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=20_000)
+
+
+class PersistTaskRequest(BaseModel):
+    project_id: UUID | None = None
+    title: str = Field(min_length=1, max_length=500)
+    description: str = Field(default="", max_length=30_000)
+    deadline: date | None = None
+    priority: Literal["low", "normal", "high"] = "normal"
+    assignee: str | None = Field(default=None, max_length=128)
+    checklist: list[str] = Field(default_factory=list, max_length=100)
+    risk_flags: list[str] = Field(default_factory=list, max_length=100)
+
+
+class TaskUpdateRequest(BaseModel):
+    status: Literal["new", "in_progress", "done", "blocked"] | None = None
+    assignee: str | None = Field(default=None, max_length=128)
+    deadline: date | None = None
+    progress: int | None = Field(default=None, ge=0, le=100)
 
 
 class SpeechRequest(BaseModel):

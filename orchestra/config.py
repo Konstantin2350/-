@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     jwt_secret: str | None = None
     jwt_issuer: str = "ai-orchestra"
     webhook_secret: str | None = None
+    webhook_secrets: str = ""
     database_url: str = "sqlite+aiosqlite:///./orchestra.db"
     redis_url: str | None = None
     celery_broker_url: str = "redis://localhost:6379/1"
@@ -51,13 +52,30 @@ class Settings(BaseSettings):
 
     @property
     def api_key_roles(self) -> dict[str, str]:
-        result: dict[str, str] = {}
+        return {key: values["role"] for key, values in self.api_key_credentials.items()}
+
+    @property
+    def api_key_credentials(self) -> dict[str, dict[str, str]]:
+        result: dict[str, dict[str, str]] = {}
         if self.api_key:
-            result[self.api_key] = "admin"
+            result[self.api_key] = {"role": "admin", "tenant_id": "default"}
         for item in self.api_keys.split(","):
-            key, separator, role = item.strip().partition(":")
-            if separator and key and role in {"viewer", "operator", "manager", "admin"}:
-                result[key] = role
+            parts = item.strip().split(":", 2)
+            if (
+                len(parts) >= 2
+                and parts[0]
+                and parts[1]
+                in {
+                    "viewer",
+                    "operator",
+                    "manager",
+                    "admin",
+                }
+            ):
+                result[parts[0]] = {
+                    "role": parts[1],
+                    "tenant_id": parts[2] if len(parts) == 3 and parts[2] else "default",
+                }
         return result
 
     @property
@@ -66,13 +84,22 @@ class Settings(BaseSettings):
         if self.environment == "production":
             if not self.api_key_roles and not self.jwt_secret:
                 issues.append("API_KEYS or JWT_SECRET is required")
-            if not self.webhook_secret:
-                issues.append("WEBHOOK_SECRET is required")
+            if not self.webhook_secret_map:
+                issues.append("WEBHOOK_SECRET or WEBHOOK_SECRETS is required")
             if not self.database_url.startswith("postgresql+asyncpg://"):
                 issues.append("PostgreSQL DATABASE_URL is required")
             if not self.redis_url:
                 issues.append("REDIS_URL is required")
         return issues
+
+    @property
+    def webhook_secret_map(self) -> dict[str, str]:
+        result = {"default": self.webhook_secret} if self.webhook_secret else {}
+        for item in self.webhook_secrets.split(","):
+            tenant, separator, secret = item.strip().partition("=")
+            if separator and tenant and secret:
+                result[tenant] = secret
+        return result
 
 
 @lru_cache

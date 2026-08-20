@@ -35,6 +35,8 @@ from orchestra.infrastructure import ConversationMemory, Database
 from orchestra.integrations import MCP_TOOLS, Bitrix24Client
 from orchestra.observability import AGENT_RUNS, metrics_middleware, metrics_response
 from orchestra.schemas import (
+    ActionConfirmRequest,
+    ActionCreateRequest,
     AgentRequest,
     BitrixCallRequest,
     CallAnalyzeRequest,
@@ -44,22 +46,30 @@ from orchestra.schemas import (
     DealHistoryItem,
     DealModelTrainRequest,
     DealPredictRequest,
+    HandoffClaimRequest,
+    HandoffReplyRequest,
     KnowledgeQuery,
     KPIForecastRequest,
     MCPRequest,
+    PersistTaskRequest,
     PresentationRequest,
+    ProcessApprovalRequest,
     ProcessDefinition,
     ProcessMiningRequest,
     ProcessNLRequest,
+    ProcessStartRequest,
+    ProjectCreateRequest,
     ProjectDigestRequest,
     SpeechRequest,
     TaskCreateRequest,
+    TaskUpdateRequest,
     TrainingEvaluateRequest,
     TrainingGenerateRequest,
     WebhookEnvelope,
 )
 from orchestra.security import ROLE_LEVELS, Authenticator, RateLimiter
 from orchestra.worker import celery_app
+from orchestra.workflows import ActionEngine, ProcessEngine, WorkflowConflict
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -68,6 +78,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     memory = ConversationMemory(settings)
     orchestrator, knowledge, crm, calls, tasks = build_orchestrator(settings, db, memory)
     bitrix = Bitrix24Client(settings)
+    action_engine = ActionEngine(db, bitrix)
+    process_engine = ProcessEngine(db, orchestrator, settings)
     authenticator = Authenticator(settings)
     rate_limiter = RateLimiter(settings)
     audio = AudioService(settings)
@@ -94,10 +106,71 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         version=__version__,
         description="Multi-agent business automation platform with Bitrix24 and MCP",
         lifespan=lifespan,
+        docs_url=None if settings.environment == "production" else "/docs",
+        redoc_url=None if settings.environment == "production" else "/redoc",
+        openapi_url=None if settings.environment == "production" else "/openapi.json",
     )
     app.state.settings = settings
     app.state.db = db
     app.state.orchestrator = orchestrator
+    app.state.bitrix = bitrix
+
+    def action_payload(action) -> dict[str, Any]:
+        return {
+            "id": action.id,
+            "tool": action.tool,
+            "status": action.status,
+            "payload": action.payload,
+            "requires_confirmation": action.requires_confirmation,
+            "result": action.result,
+            "error": action.error,
+            "created_at": action.created_at,
+            "updated_at": action.updated_at,
+        }
+
+    def process_instance_payload(instance) -> dict[str, Any]:
+        return {
+            "id": instance.id,
+            "process_id": instance.process_id,
+            "status": instance.status,
+            "current_step": instance.current_step,
+            "context": instance.context,
+            "history": instance.history,
+            "created_at": instance.created_at,
+            "updated_at": instance.updated_at,
+        }
+
+    def handoff_payload(handoff) -> dict[str, Any]:
+        return {
+            "id": handoff.id,
+            "session_id": handoff.session_id,
+            "user_id": handoff.user_id,
+            "channel": handoff.channel,
+            "status": handoff.status,
+            "reason": handoff.reason,
+            "assigned_to": handoff.assigned_to,
+            "history": handoff.history,
+            "replies": handoff.replies,
+            "created_at": handoff.created_at,
+            "updated_at": handoff.updated_at,
+        }
+
+    def task_payload(task) -> dict[str, Any]:
+        return {
+            "id": task.id,
+            "project_id": task.project_id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "priority": task.priority,
+            "deadline": task.deadline,
+            "assignee": task.assignee,
+            "progress": task.progress,
+            "checklist": task.checklist,
+            "risk_flags": task.risk_flags,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
 
     if settings.cors_origin_list:
         app.add_middleware(
@@ -132,6 +205,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "/v1/jobs",
                     "/v1/analytics",
                     "/v1/crm/deal-model",
+                    "/v1/actions",
+                    "/v1/operator",
                 )
             ):
                 minimum_role = "manager"
@@ -142,7 +217,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     {"detail": f"Role {minimum_role} required", "request_id": request_id},
                     status_code=403,
                 )
-            allowed, remaining = await rate_limiter.allow(principal.user_id)
+            try:
+                allowed, remaining = await rate_limiter.allow(
+                    f"{principal.tenant_id}:{principal.user_id}"
+                )
+            except Exception:
+                return JSONResponse(
+                    {
+                        "detail": "Rate limiter unavailable",
+                        "request_id": request_id,
+                    },
+                    status_code=503,
+                )
             if not allowed:
                 return JSONResponse(
                     {"detail": "Rate limit exceeded", "request_id": request_id},
@@ -155,6 +241,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         response.headers["x-request-id"] = request_id
         response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-content-type-options"] = "nosniff"
+        response.headers["x-frame-options"] = "DENY"
+        response.headers["referrer-policy"] = "no-referrer"
         return response
 
     @app.get("/health", tags=["system"])
@@ -167,7 +256,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/ready", tags=["system"])
-    async def ready() -> dict[str, str]:
+    async def ready() -> dict[str, Any]:
         if settings.production_issues:
             raise HTTPException(
                 status_code=503,
@@ -178,20 +267,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await connection.execute(text("SELECT 1"))
         except Exception as error:
             raise HTTPException(status_code=503, detail="Database unavailable") from error
-        return {"status": "ready"}
+        try:
+            redis_ready = await memory.ping()
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Redis unavailable") from error
+        return {
+            "status": "ready",
+            "components": {
+                "database": "ready",
+                "redis": (
+                    "not-configured"
+                    if memory.redis is None
+                    else "ready"
+                    if redis_ready
+                    else "unavailable"
+                ),
+            },
+        }
 
     @app.get("/metrics", include_in_schema=False)
     async def metrics():
         return metrics_response()
 
     @app.post("/v1/orchestrate", tags=["agents"])
-    async def orchestrate(body: AgentRequest):
+    async def orchestrate(body: AgentRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
         response = await orchestrator.execute(body)
         AGENT_RUNS.labels(response.agent, str(response.requires_human).lower()).inc()
         return response
 
     @app.post("/v1/jobs/agent", tags=["agents"], status_code=202)
-    async def enqueue_agent(body: AgentRequest):
+    async def enqueue_agent(body: AgentRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
         try:
             job = celery_app.send_task("orchestra.run_agent", args=[body.model_dump(mode="json")])
         except Exception as error:
@@ -208,6 +327,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response["error"] = str(result.result)
         return response
 
+    @app.post("/v1/actions", tags=["actions"], status_code=201)
+    async def create_action(body: ActionCreateRequest, request: Request):
+        principal = request.state.principal
+        action = await db.create_action(
+            tenant_id=principal.tenant_id,
+            actor=principal.user_id,
+            tool=body.tool,
+            payload=body.payload,
+            requires_confirmation=body.requires_confirmation,
+            idempotency_key=body.idempotency_key,
+        )
+        return action_payload(action)
+
+    @app.get("/v1/actions", tags=["actions"])
+    async def list_actions(request: Request, status: str | None = None):
+        records = await db.list_actions(request.state.principal.tenant_id, status)
+        return {"actions": [action_payload(item) for item in records]}
+
+    @app.post("/v1/actions/{action_id}/confirm", tags=["actions"])
+    async def confirm_action(action_id: str, body: ActionConfirmRequest, request: Request):
+        try:
+            action = await action_engine.confirm(
+                action_id,
+                request.state.principal.tenant_id,
+                body.payload_updates,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Action not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return action_payload(action)
+
+    @app.post("/v1/actions/{action_id}/execute", tags=["actions"])
+    async def execute_action(action_id: str, request: Request):
+        try:
+            action = await action_engine.execute(action_id, request.state.principal.tenant_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Action not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return action_payload(action)
+
+    @app.post("/v1/actions/{action_id}/enqueue", tags=["actions"], status_code=202)
+    async def enqueue_action(action_id: str, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        action = await db.get_action(action_id, tenant_id)
+        if not action:
+            raise HTTPException(status_code=404, detail="Action not found")
+        if action.status != "confirmed":
+            raise HTTPException(status_code=409, detail="Confirm action first")
+        try:
+            job = celery_app.send_task("orchestra.execute_action", args=[action_id, tenant_id])
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Task queue unavailable") from error
+        return {"job_id": job.id, "action_id": action_id, "status": "queued"}
+
     @app.post("/v1/crm/extract", tags=["crm"])
     async def crm_extract(body: CRMExtractRequest):
         return crm.extract(body.text, body.current_fields)
@@ -217,12 +392,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"customers": crm.repeat_sales(body)}
 
     @app.post("/v1/crm/deal-model/train", tags=["crm"])
-    async def train_deal_model(body: DealModelTrainRequest):
+    async def train_deal_model(body: DealModelTrainRequest, request: Request):
         try:
             parameters, model_metrics = crm.train_deal_model(body.examples)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-        model = await db.save_model("deal_outcome", parameters, model_metrics)
+        model = await db.save_model(
+            "deal_outcome",
+            parameters,
+            model_metrics,
+            request.state.principal.tenant_id,
+        )
         return {
             "model_id": model.id,
             "version": model.version,
@@ -230,8 +410,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/v1/crm/deal-model/predict", tags=["crm"])
-    async def predict_deal(body: DealPredictRequest):
-        model = await db.active_model("deal_outcome")
+    async def predict_deal(body: DealPredictRequest, request: Request):
+        model = await db.active_model("deal_outcome", request.state.principal.tenant_id)
         if not model:
             raise HTTPException(status_code=409, detail="Train a deal model first")
         try:
@@ -285,15 +465,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/v1/chat/messages", tags=["chat"])
-    async def chat(body: ChatRequest):
+    async def chat(body: ChatRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
         return await orchestrator.chat(body)
 
     @app.post("/v1/channels/{channel}/messages", tags=["chat"])
-    async def channel_message(channel: str, body: ChatRequest):
+    async def channel_message(channel: str, body: ChatRequest, request: Request):
         supported = {"web", "bitrix24", "telegram", "whatsapp", "email", "api"}
         if channel not in supported:
             raise HTTPException(status_code=422, detail="Unsupported channel")
-        return await orchestrator.chat(body.model_copy(update={"channel": channel}))
+        principal = request.state.principal
+        return await orchestrator.chat(
+            body.model_copy(
+                update={
+                    "channel": channel,
+                    "user_id": principal.user_id,
+                    "tenant_id": principal.tenant_id,
+                }
+            )
+        )
 
     @app.websocket("/v1/chat/ws/{session_id}")
     async def chat_socket(websocket: WebSocket, session_id: str):
@@ -306,7 +502,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await websocket.accept()
         try:
             while True:
-                allowed, _ = await rate_limiter.allow(principal.user_id)
+                allowed, _ = await rate_limiter.allow(f"{principal.tenant_id}:{principal.user_id}")
                 if not allowed:
                     await websocket.send_json({"error": "Rate limit exceeded"})
                     await websocket.close(code=1013)
@@ -316,7 +512,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     ChatRequest(
                         session_id=session_id,
                         message=payload.get("message", ""),
-                        user_id=payload.get("user_id", "anonymous"),
+                        user_id=principal.user_id,
+                        tenant_id=principal.tenant_id,
                         persona=payload.get("persona", "auto"),
                     )
                 )
@@ -324,24 +521,176 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except WebSocketDisconnect:
             return
 
+    @app.get("/v1/operator/handoffs", tags=["operators"])
+    async def list_operator_handoffs(request: Request, status: str | None = "queued"):
+        records = await db.list_handoffs(request.state.principal.tenant_id, status)
+        return {"handoffs": [handoff_payload(item) for item in records]}
+
+    @app.post("/v1/operator/handoffs/{handoff_id}/claim", tags=["operators"])
+    async def claim_handoff(handoff_id: str, body: HandoffClaimRequest, request: Request):
+        principal = request.state.principal
+        records = await db.list_handoffs(principal.tenant_id)
+        current = next((item for item in records if item.id == handoff_id), None)
+        if not current:
+            raise HTTPException(status_code=404, detail="Handoff not found")
+        if current.status not in {"queued", "claimed"}:
+            raise HTTPException(status_code=409, detail="Handoff is closed")
+        updated = await db.update_handoff(
+            handoff_id,
+            principal.tenant_id,
+            status="claimed",
+            assigned_to=body.operator_id or principal.user_id,
+        )
+        assert updated
+        return handoff_payload(updated)
+
+    @app.post("/v1/operator/handoffs/{handoff_id}/reply", tags=["operators"])
+    async def reply_handoff(handoff_id: str, body: HandoffReplyRequest, request: Request):
+        principal = request.state.principal
+        records = await db.list_handoffs(principal.tenant_id)
+        current = next((item for item in records if item.id == handoff_id), None)
+        if not current:
+            raise HTTPException(status_code=404, detail="Handoff not found")
+        if current.status != "claimed":
+            raise HTTPException(status_code=409, detail="Claim handoff first")
+        replies = list(current.replies)
+        replies.append(
+            {
+                "operator_id": principal.user_id,
+                "message": body.message,
+            }
+        )
+        updated = await db.update_handoff(
+            handoff_id,
+            principal.tenant_id,
+            replies=replies,
+            status="closed" if body.close else "claimed",
+        )
+        assert updated
+        await db.append_event(
+            "handoff.operator_reply",
+            principal.user_id,
+            {
+                "handoff_id": handoff_id,
+                "channel": current.channel,
+                "closed": body.close,
+            },
+            tenant_id=principal.tenant_id,
+        )
+        return {
+            **handoff_payload(updated),
+            "delivery": "recorded",
+        }
+
     @app.post("/v1/knowledge/documents", tags=["knowledge"])
     async def upload_document(
+        request: Request,
         file: Annotated[UploadFile, File()],
         title: Annotated[str | None, Form()] = None,
     ):
         content = await file.read(settings.max_upload_bytes + 1)
         try:
-            return await knowledge.ingest(file.filename or "document.txt", content, title)
+            return await knowledge.ingest(
+                file.filename or "document.txt",
+                content,
+                title,
+                request.state.principal.tenant_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post("/v1/knowledge/query", tags=["knowledge"])
-    async def query_knowledge(body: KnowledgeQuery):
-        return await knowledge.answer(body.question, body.limit)
+    async def query_knowledge(body: KnowledgeQuery, request: Request):
+        return await knowledge.answer(
+            body.question,
+            body.limit,
+            request.state.principal.tenant_id,
+        )
 
     @app.post("/v1/tasks/from-text", tags=["tasks"])
     async def task_from_text(body: TaskCreateRequest):
         return tasks.create(body.text, body.available_assignees)
+
+    @app.post("/v1/projects", tags=["tasks"], status_code=201)
+    async def create_project(body: ProjectCreateRequest, request: Request):
+        project = await db.create_project(
+            request.state.principal.tenant_id, body.name, body.description
+        )
+        return {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status,
+            "created_at": project.created_at,
+        }
+
+    @app.get("/v1/projects", tags=["tasks"])
+    async def list_projects(request: Request):
+        records = await db.list_projects(request.state.principal.tenant_id)
+        return {
+            "projects": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "description": item.description,
+                    "status": item.status,
+                    "created_at": item.created_at,
+                }
+                for item in records
+            ]
+        }
+
+    @app.post("/v1/tasks", tags=["tasks"], status_code=201)
+    async def persist_task(body: PersistTaskRequest, request: Request):
+        values = body.model_dump(mode="json")
+        values["project_id"] = str(body.project_id) if body.project_id else None
+        values["status"] = "new"
+        values["progress"] = 0
+        try:
+            task = await db.create_task(request.state.principal.tenant_id, values)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return task_payload(task)
+
+    @app.get("/v1/projects/{project_id}/tasks", tags=["tasks"])
+    async def list_project_tasks(project_id: str, request: Request):
+        records = await db.list_tasks(request.state.principal.tenant_id, project_id)
+        return {"tasks": [task_payload(item) for item in records]}
+
+    @app.patch("/v1/tasks/{task_id}", tags=["tasks"])
+    async def update_task(task_id: str, body: TaskUpdateRequest, request: Request):
+        values = body.model_dump(mode="json", exclude_unset=True)
+        task = await db.update_task(task_id, request.state.principal.tenant_id, values)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task_payload(task)
+
+    @app.post("/v1/tasks/{task_id}/sync-bitrix", tags=["tasks"])
+    async def sync_task_to_bitrix(task_id: str, request: Request):
+        principal = request.state.principal
+        records = await db.list_tasks(principal.tenant_id)
+        task = next((item for item in records if item.id == task_id), None)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        action = await db.create_action(
+            tenant_id=principal.tenant_id,
+            actor=principal.user_id,
+            tool="bitrix.call",
+            payload={
+                "method": "tasks.task.add",
+                "params": {
+                    "fields": {
+                        "TITLE": task.title,
+                        "DESCRIPTION": task.description,
+                        "DEADLINE": task.deadline,
+                        "RESPONSIBLE_ID": task.assignee,
+                    }
+                },
+            },
+            requires_confirmation=True,
+            idempotency_key=f"task:{task.id}:bitrix-sync",
+        )
+        return action_payload(action)
 
     @app.post("/v1/processes/compile", tags=["automation"])
     async def compile_process(body: ProcessDefinition):
@@ -357,8 +706,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.post("/v1/processes/from-text", tags=["automation"])
-    async def process_from_text(body: ProcessNLRequest):
-        return processes.compile_nl(body)
+    async def process_from_text(body: ProcessNLRequest, request: Request):
+        compiled = processes.compile_nl(body)
+        record = await db.save_process(request.state.principal.tenant_id, compiled["process"])
+        return {**compiled, "process_id": record.id}
+
+    @app.post("/v1/processes", tags=["automation"], status_code=201)
+    async def save_process(body: ProcessDefinition, request: Request):
+        invalid = processes.validate(body.steps)
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported step types at indexes: {invalid}",
+            )
+        record = await db.save_process(request.state.principal.tenant_id, body.model_dump())
+        return {
+            "id": record.id,
+            "name": record.name,
+            "trigger": record.trigger,
+            "definition": record.definition,
+            "active": record.active,
+        }
+
+    @app.post("/v1/processes/instances", tags=["automation"], status_code=201)
+    async def start_process(body: ProcessStartRequest, request: Request):
+        principal = request.state.principal
+        try:
+            instance = await process_engine.start(
+                str(body.process_id),
+                principal.tenant_id,
+                principal.user_id,
+                body.context,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if instance.status == "waiting":
+            process = await db.get_process(str(body.process_id), principal.tenant_id)
+            step = process.definition["steps"][instance.current_step] if process else {}
+            seconds = max(1, min(int(step.get("seconds", 60)), 86_400))
+            celery_app.send_task(
+                "orchestra.resume_process_wait",
+                args=[instance.id, principal.tenant_id],
+                countdown=seconds,
+            )
+        return process_instance_payload(instance)
+
+    @app.get("/v1/processes/instances/{instance_id}", tags=["automation"])
+    async def get_process_instance(instance_id: str, request: Request):
+        instance = await db.get_process_instance(instance_id, request.state.principal.tenant_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Process instance not found")
+        return process_instance_payload(instance)
+
+    @app.post("/v1/processes/instances/{instance_id}/approve", tags=["automation"])
+    async def approve_process(instance_id: str, body: ProcessApprovalRequest, request: Request):
+        try:
+            instance = await process_engine.approve(
+                instance_id,
+                request.state.principal.tenant_id,
+                body.approved,
+                body.comment,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process instance not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return process_instance_payload(instance)
+
+    @app.post("/v1/processes/instances/{instance_id}/resume", tags=["automation"])
+    async def resume_process(instance_id: str, request: Request):
+        try:
+            instance = await process_engine.resume_after_action(
+                instance_id, request.state.principal.tenant_id
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process instance not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return process_instance_payload(instance)
 
     @app.post("/v1/content/generate", tags=["content"])
     async def generate_content(body: ContentRequest):
@@ -426,25 +853,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def bitrix_webhook(
         body: WebhookEnvelope,
         x_webhook_secret: Annotated[str | None, Header()] = None,
+        x_tenant_id: Annotated[str, Header()] = "default",
     ):
-        if settings.webhook_secret and not secrets.compare_digest(
-            x_webhook_secret or "", settings.webhook_secret
-        ):
+        expected_secret = settings.webhook_secret_map.get(x_tenant_id)
+        if expected_secret and not secrets.compare_digest(x_webhook_secret or "", expected_secret):
             raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        if settings.webhook_secret_map and not expected_secret:
+            raise HTTPException(status_code=401, detail="Unknown webhook tenant")
+        if settings.environment == "production" and not body.event_id:
+            raise HTTPException(status_code=422, detail="event_id is required")
         inserted = await db.append_event(
             f"bitrix.{body.event}",
             "bitrix24",
             body.model_dump(mode="json"),
-            external_id=(f"bitrix:{body.event_id}" if body.event_id else None),
+            external_id=(f"bitrix:{x_tenant_id}:{body.event_id}" if body.event_id else None),
+            tenant_id=x_tenant_id,
         )
+        instances = []
+        if inserted:
+            for process in await db.processes_for_trigger(body.event, x_tenant_id):
+                instance = await process_engine.start(
+                    process.id,
+                    x_tenant_id,
+                    "bitrix24",
+                    {"event": body.model_dump(mode="json")},
+                )
+                instances.append(instance.id)
         return {
             "accepted": inserted,
             "duplicate": not inserted,
             "event_id": body.event_id,
+            "process_instances": instances,
         }
 
     @app.post("/mcp", tags=["mcp"])
-    async def mcp(body: MCPRequest):
+    async def mcp(body: MCPRequest, request: Request):
+        principal = request.state.principal
         if body.method == "initialize":
             result: Any = {
                 "protocolVersion": "2025-06-18",
@@ -457,10 +901,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             tool_name = body.params.get("name")
             arguments = body.params.get("arguments", {})
             if tool_name == "orchestra_agent":
-                response = await orchestrator.execute(AgentRequest(**arguments))
+                agent_request = AgentRequest(**arguments).model_copy(
+                    update={
+                        "user_id": principal.user_id,
+                        "tenant_id": principal.tenant_id,
+                    }
+                )
+                response = await orchestrator.execute(agent_request)
                 result = {"content": [{"type": "text", "text": response.model_dump_json()}]}
             elif tool_name == "knowledge_search":
-                answer = await knowledge.answer(arguments["question"], arguments.get("limit", 5))
+                answer = await knowledge.answer(
+                    arguments["question"],
+                    arguments.get("limit", 5),
+                    principal.tenant_id,
+                )
                 result = {"content": [{"type": "text", "text": answer.model_dump_json()}]}
             elif tool_name == "crm_extract":
                 extraction = crm.extract(arguments["text"], arguments.get("current_fields", {}))

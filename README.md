@@ -18,17 +18,21 @@ Bitrix24 выполняет разрешённые REST-методы и масс
 - Чат: Redis-память с локальным резервом, роли sales/support/onboarding,
   поиск по базе знаний и передача оператору с историей; HTTP и WebSocket.
 - RAG: PDF/DOCX/TXT/MD, защита форматов, дедупликация, версионность, chunking,
-  OpenAI или локальные embeddings, гибридный reranking и ссылки на источники.
+  OpenAI или локальные embeddings, pgvector HNSW, гибридный reranking и ссылки.
 - Задачи: разбор естественного языка, дедлайн, приоритет, чек-лист,
-  рекомендация исполнителя по компетенциям/нагрузке и флаги риска.
+  рекомендация исполнителя по компетенциям/нагрузке, хранимые проекты/задачи,
+  статусы, риски и подтверждаемая синхронизация с Bitrix24.
 - Автоматизация: проверяемый BPMN-like JSON DSL, Bitrix webhooks, event log,
-  конструктор процессов из русского текста, Celery, batch Bitrix API и MCP tools.
+  конструктор процессов из русского текста, runtime экземпляров/approvals/waits,
+  подтверждаемые и идемпотентные Bitrix actions, Celery, batch API и MCP tools.
 - Контент и развитие: письма/META/описания, резюме встреч, PPTX-презентации,
   генерация тестов, семантическая проверка ответов и адаптивная сложность.
 - Аналитика: дайджест проектов, process mining, узкие места и прогноз KPI.
 - Безопасность и эксплуатация: API keys/JWT, роли viewer/operator/manager/admin,
-  rate limit, идемпотентные webhooks, Prometheus metrics, миграции Alembic,
-  allowlist Bitrix24, подтверждение опасных действий и request ID.
+  tenant/session isolation, rate limit, идемпотентные webhooks, Prometheus,
+  миграции Alembic, точный allowlist Bitrix24, security headers и request ID.
+- Операторы: сохраняемая очередь handoff, claim, история диалога, ответы и
+  закрытие обращения.
 
 Внешний LLM необязателен для текста, RAG и аналитики: без ключа работает локальный
 предсказуемый режим. Расшифровка реального аудио и синтез речи требуют
@@ -89,6 +93,9 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 - `/v1/calls/transcribe`, `/v1/calls/process-audio`, `/v1/voice/synthesize`
 - `/v1/processes/from-text`, `/v1/content/generate`,
   `/v1/content/presentation`
+- `/v1/actions`, `/v1/actions/{id}/confirm`, `/execute`, `/enqueue`
+- `/v1/processes/instances`, `/approve`, `/resume`
+- `/v1/operator/handoffs`, `/claim`, `/reply`
 - `/v1/training/tests`, `/v1/training/evaluate`
 - `/v1/analytics/process-mining`, `/v1/analytics/kpi-forecast`,
   `/v1/projects/digest`
@@ -97,14 +104,18 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 ## Права доступа
 
 `API_KEYS` принимает строку вида
-`read-key:viewer,bot-key:operator,lead-key:manager,root-key:admin`.
+`read-key:viewer:company-a,bot-key:operator:company-a`. Третья часть — организация;
+данные, память диалогов, модели, actions и процессы изолируются по ней.
 
 - `viewer` читает статусы, результаты и метрики.
 - `operator` общается с агентами и обрабатывает клиентские запросы.
 - `manager` запускает процессы, аналитику, очередь и действия Bitrix24.
 - `admin` предназначен для административных операций.
 
-Вместо ключей поддерживается JWT HS256 с `sub`, `role`, `iat`, `exp`, `iss`.
+Вместо ключей поддерживается JWT HS256 с `sub`, `role`, `tenant_id`, `iat`,
+`exp`, `iss`. Для webhook нескольких организаций задайте
+`WEBHOOK_SECRETS=company-a=secret-a,company-b=secret-b` и передавайте
+`x-tenant-id`.
 
 ## Производственная конфигурация
 

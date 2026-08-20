@@ -29,7 +29,8 @@ def test_health_and_readiness(tmp_path):
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
     assert health.json()["llm"] == "local-fallback"
-    assert ready.json() == {"status": "ready"}
+    assert ready.json()["status"] == "ready"
+    assert ready.json()["components"]["database"] == "ready"
 
 
 def test_crm_extraction_does_not_overwrite_existing_fields(tmp_path):
@@ -100,6 +101,7 @@ def test_orchestrator_routes_task_and_builds_checklist(tmp_path):
     assert payload["data"]["priority"] == "high"
     assert payload["data"]["recommended_assignee"] == "Анна"
     assert payload["actions"][0]["requires_confirmation"] is True
+    assert payload["actions"][0]["action_id"]
 
 
 def test_versioned_knowledge_rag_returns_citation(tmp_path):
@@ -394,3 +396,212 @@ def test_audio_provider_guard_and_local_wav_signals(tmp_path):
     assert signals["available"] is True
     assert signals["duration_seconds"] == 1
     assert signals["energy"] > 0
+
+
+def test_action_engine_confirmation_execution_and_tenant_isolation(tmp_path):
+    headers_a = {"x-api-key": "manager-a"}
+    headers_b = {"x-api-key": "manager-b"}
+    with make_client(
+        tmp_path,
+        api_keys="manager-a:manager:tenant-a,manager-b:manager:tenant-b",
+    ) as client:
+
+        async def fake_bitrix_call(method, params):
+            return {"result": {"method": method, "id": params["id"]}}
+
+        client.app.state.bitrix.call = fake_bitrix_call
+        body = {
+            "tool": "bitrix.call",
+            "payload": {},
+            "requires_confirmation": True,
+            "idempotency_key": "deal-update-42",
+        }
+        created = client.post("/v1/actions", headers=headers_a, json=body)
+        duplicate = client.post("/v1/actions", headers=headers_a, json=body)
+        action_id = created.json()["id"]
+        confirmed = client.post(
+            f"/v1/actions/{action_id}/confirm",
+            headers=headers_a,
+            json={
+                "payload_updates": {
+                    "method": "crm.deal.update",
+                    "params": {"id": 42, "fields": {"TITLE": "Новая сделка"}},
+                }
+            },
+        )
+        executed = client.post(f"/v1/actions/{action_id}/execute", headers=headers_a)
+        tenant_b_actions = client.get("/v1/actions", headers=headers_b)
+        forbidden_method = client.post(
+            "/v1/bitrix/call",
+            headers=headers_a,
+            json={"method": "crm.deal.delete", "params": {"id": 42}},
+        )
+
+    assert created.status_code == 201
+    assert duplicate.json()["id"] == action_id
+    assert confirmed.json()["status"] == "confirmed"
+    assert executed.json()["status"] == "executed"
+    assert executed.json()["result"]["result"]["id"] == 42
+    assert tenant_b_actions.json()["actions"] == []
+    assert forbidden_method.status_code == 422
+
+
+def test_process_runtime_approval_and_webhook_trigger(tmp_path):
+    headers = {"x-api-key": "manager-key"}
+    with make_client(
+        tmp_path,
+        api_keys="manager-key:manager:acme",
+        webhook_secrets="acme=hook-acme",
+    ) as client:
+        saved = client.post(
+            "/v1/processes",
+            headers=headers,
+            json={
+                "name": "Согласование скидки",
+                "trigger": "manual",
+                "steps": [
+                    {"type": "notify", "instruction": "Проверка началась"},
+                    {"type": "human_approval", "instruction": "Согласовать"},
+                    {"type": "notify", "instruction": "Скидка согласована"},
+                ],
+            },
+        )
+        started = client.post(
+            "/v1/processes/instances",
+            headers=headers,
+            json={"process_id": saved.json()["id"], "context": {"deal_id": 42}},
+        )
+        approved = client.post(
+            f"/v1/processes/instances/{started.json()['id']}/approve",
+            headers=headers,
+            json={"approved": True, "comment": "Одобрено"},
+        )
+        event_process = client.post(
+            "/v1/processes",
+            headers=headers,
+            json={
+                "name": "Новый лид",
+                "trigger": "ONCRMLEADADD",
+                "steps": [{"type": "notify", "instruction": "Назначить менеджера"}],
+            },
+        )
+        webhook = client.post(
+            "/v1/webhooks/bitrix24",
+            headers={
+                "x-webhook-secret": "hook-acme",
+                "x-tenant-id": "acme",
+            },
+            json={
+                "event": "ONCRMLEADADD",
+                "event_id": "lead-event-1",
+                "data": {"id": 100},
+            },
+        )
+
+    assert saved.status_code == 201
+    assert started.json()["status"] == "waiting_approval"
+    assert started.json()["current_step"] == 1
+    assert approved.json()["status"] == "completed"
+    assert len(approved.json()["history"]) == 3
+    assert event_process.status_code == 201
+    assert len(webhook.json()["process_instances"]) == 1
+
+
+def test_operator_handoff_queue_and_session_tenant_isolation(tmp_path):
+    operator_a = {"x-api-key": "operator-a"}
+    operator_b = {"x-api-key": "operator-b"}
+    manager_a = {"x-api-key": "manager-a"}
+    with make_client(
+        tmp_path,
+        api_keys=(
+            "operator-a:operator:tenant-a,operator-b:operator:tenant-b,manager-a:manager:tenant-a"
+        ),
+    ) as client:
+        handoff = client.post(
+            "/v1/chat/messages",
+            headers=operator_a,
+            json={"session_id": "same-session", "message": "Позовите оператора"},
+        )
+        isolated = client.post(
+            "/v1/chat/messages",
+            headers=operator_b,
+            json={"session_id": "same-session", "message": "Нужна помощь"},
+        )
+        client.post(
+            "/v1/knowledge/documents",
+            headers=operator_a,
+            files={
+                "file": (
+                    "private.md",
+                    "Секретный регламент компании tenant-a.",
+                    "text/markdown",
+                )
+            },
+            data={"title": "Закрытый регламент"},
+        )
+        tenant_b_search = client.post(
+            "/v1/knowledge/query",
+            headers=operator_b,
+            json={"question": "Секретный регламент компании"},
+        )
+        queued = client.get("/v1/operator/handoffs", headers=manager_a)
+        handoff_id = handoff.json()["handoff_id"]
+        claimed = client.post(
+            f"/v1/operator/handoffs/{handoff_id}/claim",
+            headers=manager_a,
+            json={},
+        )
+        replied = client.post(
+            f"/v1/operator/handoffs/{handoff_id}/reply",
+            headers=manager_a,
+            json={"message": "Подключился менеджер", "close": True},
+        )
+
+    assert handoff.json()["handoff"] is True
+    assert len(queued.json()["handoffs"]) == 1
+    assert claimed.json()["status"] == "claimed"
+    assert replied.json()["status"] == "closed"
+    assert replied.json()["delivery"] == "recorded"
+    assert len(isolated.json()["history"]) == 2
+    assert tenant_b_search.json()["citations"] == []
+
+
+def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):
+    headers = {"x-api-key": "operator-key"}
+    with make_client(tmp_path, api_keys="operator-key:operator:projects-tenant") as client:
+        project = client.post(
+            "/v1/projects",
+            headers=headers,
+            json={"name": "Запуск продукта", "description": "План запуска"},
+        )
+        task = client.post(
+            "/v1/tasks",
+            headers=headers,
+            json={
+                "project_id": project.json()["id"],
+                "title": "Подготовить презентацию",
+                "description": "Собрать итоговый PPTX",
+                "priority": "high",
+                "checklist": ["Структура", "Дизайн", "Проверка"],
+            },
+        )
+        updated = client.patch(
+            f"/v1/tasks/{task.json()['id']}",
+            headers=headers,
+            json={"status": "in_progress", "progress": 30},
+        )
+        listed = client.get(
+            f"/v1/projects/{project.json()['id']}/tasks",
+            headers=headers,
+        )
+        sync = client.post(
+            f"/v1/tasks/{task.json()['id']}/sync-bitrix",
+            headers=headers,
+        )
+
+    assert project.status_code == 201
+    assert task.status_code == 201
+    assert updated.json()["progress"] == 30
+    assert listed.json()["tasks"][0]["title"] == "Подготовить презентацию"
+    assert sync.json()["status"] == "proposed"
+    assert sync.json()["payload"]["method"] == "tasks.task.add"

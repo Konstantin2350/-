@@ -32,7 +32,7 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: postgres:18-alpine
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_DB: orchestra
       POSTGRES_USER: orchestra

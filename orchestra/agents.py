@@ -64,6 +64,29 @@ class Orchestrator:
             "content": self._content,
         }
         response = await handlers[agent](request)
+        stored_actions = []
+        for index, action in enumerate(response.actions):
+            action_payload = {
+                key: value
+                for key, value in action.items()
+                if key not in {"tool", "status", "requires_confirmation"}
+            }
+            record = await self.db.create_action(
+                tenant_id=request.tenant_id,
+                actor=request.user_id,
+                tool=action["tool"],
+                payload=action_payload,
+                requires_confirmation=action.get("requires_confirmation", True),
+                idempotency_key=f"agent:{response.request_id}:{index}",
+            )
+            stored_actions.append(
+                {
+                    **action,
+                    "action_id": record.id,
+                    "status": record.status,
+                }
+            )
+        response.actions = stored_actions
         await self.db.append_event(
             "agent.completed",
             request.user_id,
@@ -73,6 +96,7 @@ class Orchestrator:
                 "session_id": request.session_id,
                 "actions": response.actions,
             },
+            tenant_id=request.tenant_id,
         )
         return response
 
@@ -116,7 +140,7 @@ class Orchestrator:
         )
 
     async def _knowledge(self, request: AgentRequest) -> AgentResponse:
-        result = await self.knowledge.answer(request.message)
+        result = await self.knowledge.answer(request.message, tenant_id=request.tenant_id)
         return AgentResponse(
             agent="knowledge",
             answer=result.answer,
@@ -159,6 +183,7 @@ class Orchestrator:
                 session_id=request.session_id,
                 message=request.message,
                 user_id=request.user_id,
+                tenant_id=request.tenant_id,
                 persona=request.context.get("persona", "auto"),
             )
         )
@@ -177,11 +202,12 @@ class Orchestrator:
 
     async def chat(self, request: ChatRequest) -> ChatResponse:
         persona = self._persona(request.message, request.persona)
-        await self.memory.add(request.session_id, "user", request.message)
-        history = await self.memory.history(request.session_id)
+        memory_key = f"{request.tenant_id}:{request.user_id}:{request.session_id}"
+        await self.memory.add(memory_key, "user", request.message)
+        history = await self.memory.history(memory_key)
         handoff_words = ("оператор", "человек", "жалоба", "претензия", "не помог")
         handoff = any(word in request.message.lower() for word in handoff_words)
-        citations = await self.knowledge.search(request.message, 3)
+        citations = await self.knowledge.search(request.message, 3, request.tenant_id)
         context = "\n".join(citation.excerpt for citation in citations)
         generated = None
         if not handoff:
@@ -197,8 +223,19 @@ class Orchestrator:
             answer = f"По базе знаний: {citations[0].excerpt} [1]"
         else:
             answer = self._fallback_answer(persona)
-        await self.memory.add(request.session_id, "assistant", answer)
-        complete_history = await self.memory.history(request.session_id)
+        await self.memory.add(memory_key, "assistant", answer)
+        complete_history = await self.memory.history(memory_key)
+        handoff_id = None
+        if handoff:
+            handoff_record = await self.db.create_handoff(
+                tenant_id=request.tenant_id,
+                session_id=request.session_id,
+                user_id=request.user_id,
+                channel=request.channel,
+                reason="Клиент запросил человека или сообщил о проблеме",
+                history=complete_history,
+            )
+            handoff_id = handoff_record.id
         return ChatResponse(
             answer=answer,
             persona=persona,
@@ -206,6 +243,7 @@ class Orchestrator:
             citations=citations,
             handoff=handoff,
             handoff_reason="Клиент запросил человека или сообщил о проблеме" if handoff else None,
+            handoff_id=handoff_id,
         )
 
     @staticmethod
