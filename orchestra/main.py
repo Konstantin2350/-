@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import secrets
@@ -244,6 +245,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response.headers["x-content-type-options"] = "nosniff"
         response.headers["x-frame-options"] = "DENY"
         response.headers["referrer-policy"] = "no-referrer"
+        if settings.environment == "production":
+            response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
         return response
 
     @app.get("/health", tags=["system"])
@@ -271,6 +274,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             redis_ready = await memory.ping()
         except Exception as error:
             raise HTTPException(status_code=503, detail="Redis unavailable") from error
+        celery_ready: bool | None = None
+        if settings.environment == "production":
+            replies = await asyncio.to_thread(lambda: celery_app.control.ping(timeout=1.5))
+            celery_ready = bool(replies)
+            if not celery_ready:
+                raise HTTPException(status_code=503, detail="Celery worker unavailable")
         return {
             "status": "ready",
             "components": {
@@ -282,6 +291,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     if redis_ready
                     else "unavailable"
                 ),
+                "celery": ("ready" if celery_ready else "not-checked"),
             },
         }
 
@@ -836,18 +846,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/v1/bitrix/call", tags=["integrations"])
-    async def bitrix_call(body: BitrixCallRequest):
+    async def bitrix_call(body: BitrixCallRequest, request: Request):
+        principal = request.state.principal
         try:
-            return await bitrix.call(body.method, body.params)
+            result = await bitrix.call(body.method, body.params)
         except (ValueError, RuntimeError) as error:
+            await db.append_event(
+                "bitrix.call.failed",
+                principal.user_id,
+                {"method": body.method, "error": str(error)[:2_000]},
+                tenant_id=principal.tenant_id,
+            )
             raise HTTPException(status_code=422, detail=str(error)) from error
+        await db.append_event(
+            "bitrix.call.completed",
+            principal.user_id,
+            {"method": body.method},
+            tenant_id=principal.tenant_id,
+        )
+        return result
 
     @app.post("/v1/bitrix/batch", tags=["integrations"])
-    async def bitrix_batch(body: list[BitrixCallRequest]):
+    async def bitrix_batch(body: list[BitrixCallRequest], request: Request):
+        principal = request.state.principal
         try:
-            return await bitrix.batch([(item.method, item.params) for item in body])
+            result = await bitrix.batch([(item.method, item.params) for item in body])
         except (ValueError, RuntimeError) as error:
+            await db.append_event(
+                "bitrix.batch.failed",
+                principal.user_id,
+                {
+                    "methods": [item.method for item in body],
+                    "error": str(error)[:2_000],
+                },
+                tenant_id=principal.tenant_id,
+            )
             raise HTTPException(status_code=422, detail=str(error)) from error
+        await db.append_event(
+            "bitrix.batch.completed",
+            principal.user_id,
+            {"methods": [item.method for item in body]},
+            tenant_id=principal.tenant_id,
+        )
+        return result
 
     @app.post("/v1/webhooks/bitrix24", tags=["integrations"])
     async def bitrix_webhook(

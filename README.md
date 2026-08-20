@@ -128,8 +128,8 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 - `BITRIX_WEBHOOK_URL` для действий в Bitrix24
 - `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` для генеративных ответов
 
-Для Railway/Render используйте `Dockerfile`, health check `/health` и readiness
-check `/ready`. API масштабируется горизонтально; состояние диалогов хранится в
+Для Railway/Render используйте `Dockerfile` и readiness check `/ready`, который
+проверяет PostgreSQL, Redis и Celery worker. API масштабируется горизонтально; состояние диалогов хранится в
 Redis, документы и журнал действий — в PostgreSQL, тяжёлые задания — в Celery.
 
 - Render: создайте Blueprint из `render.yaml`.

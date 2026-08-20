@@ -31,6 +31,8 @@ def test_health_and_readiness(tmp_path):
     assert health.json()["llm"] == "local-fallback"
     assert ready.json()["status"] == "ready"
     assert ready.json()["components"]["database"] == "ready"
+    assert ready.json()["components"]["celery"] == "not-checked"
+    assert health.headers["x-content-type-options"] == "nosniff"
 
 
 def test_crm_extraction_does_not_overwrite_existing_fields(tmp_path):

@@ -12,7 +12,7 @@ services:
     name: ai-orchestra-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
       - key: ENVIRONMENT
         value: production
