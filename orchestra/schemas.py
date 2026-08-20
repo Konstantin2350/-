@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -64,6 +64,25 @@ class DealHistoryItem(BaseModel):
     purchases: int = 0
 
 
+class DealTrainingExample(BaseModel):
+    text: str = ""
+    amount: float = 0
+    days_open: int = Field(default=0, ge=0)
+    activities: int = Field(default=0, ge=0)
+    won: bool
+
+
+class DealModelTrainRequest(BaseModel):
+    examples: list[DealTrainingExample] = Field(min_length=10, max_length=100_000)
+
+
+class DealPredictRequest(BaseModel):
+    text: str = ""
+    amount: float = 0
+    days_open: int = Field(default=0, ge=0)
+    activities: int = Field(default=0, ge=0)
+
+
 class CallAnalyzeRequest(BaseModel):
     transcript: str = Field(min_length=1, max_length=200_000)
     sales_script: list[str] = Field(default_factory=list)
@@ -88,6 +107,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=30_000)
     user_id: str = Field(default="anonymous", max_length=128)
     persona: Literal["sales", "support", "onboarding", "auto"] = "auto"
+    channel: Literal["web", "bitrix24", "telegram", "whatsapp", "email", "api"] = "api"
 
 
 class ChatResponse(BaseModel):
@@ -147,6 +167,68 @@ class ProcessDefinition(BaseModel):
     name: str
     trigger: str
     steps: list[dict[str, Any]]
+
+
+class ProcessNLRequest(BaseModel):
+    description: str = Field(min_length=5, max_length=30_000)
+
+
+class ContentRequest(BaseModel):
+    kind: Literal["email", "product", "meta", "brainstorm", "meeting_summary", "article"]
+    brief: str = Field(min_length=3, max_length=50_000)
+    audience: str = Field(default="клиенты", max_length=500)
+    tone: str = Field(default="деловой", max_length=100)
+
+
+class PresentationRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=10, max_length=100_000)
+    slides: int = Field(default=6, ge=3, le=20)
+
+
+class TrainingGenerateRequest(BaseModel):
+    source: str = Field(min_length=20, max_length=100_000)
+    count: int = Field(default=5, ge=1, le=50)
+
+
+class TrainingEvaluateRequest(BaseModel):
+    expected: str = Field(min_length=1, max_length=10_000)
+    answer: str = Field(min_length=1, max_length=10_000)
+    previous_scores: list[float] = Field(default_factory=list, max_length=100)
+
+
+class ProcessEvent(BaseModel):
+    case_id: str = Field(min_length=1, max_length=128)
+    activity: str = Field(min_length=1, max_length=300)
+    occurred_at: datetime
+
+
+class ProcessMiningRequest(BaseModel):
+    events: list[ProcessEvent] = Field(min_length=2, max_length=100_000)
+
+
+class KPIForecastRequest(BaseModel):
+    values: list[float] = Field(min_length=3, max_length=10_000)
+    horizon: int = Field(default=3, ge=1, le=365)
+
+
+class ProjectTask(BaseModel):
+    title: str
+    status: Literal["new", "in_progress", "done", "blocked"]
+    due_date: date | None = None
+    progress: int = Field(default=0, ge=0, le=100)
+    assignee: str | None = None
+
+
+class ProjectDigestRequest(BaseModel):
+    project: str
+    tasks: list[ProjectTask]
+
+
+class SpeechRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4_000)
+    voice: str = Field(default="alloy", max_length=100)
+    format: Literal["mp3", "wav", "opus", "aac", "flac"] = "mp3"
 
 
 class MCPRequest(BaseModel):

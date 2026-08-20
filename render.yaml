@@ -1,0 +1,85 @@
+databases:
+  - name: ai-orchestra-db
+    databaseName: orchestra
+    user: orchestra
+
+services:
+  - type: keyvalue
+    name: ai-orchestra-redis
+    ipAllowList: []
+
+  - type: web
+    name: ai-orchestra-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-orchestra-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: API_KEY
+        generateValue: true
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: BITRIX_WEBHOOK_URL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+
+  - type: worker
+    name: ai-orchestra-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: celery -A orchestra.worker.celery_app worker --loglevel=INFO
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-orchestra-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          type: keyvalue
+          name: ai-orchestra-redis
+          property: connectionString
+      - key: API_KEY
+        fromService:
+          type: web
+          name: ai-orchestra-api
+          envVarKey: API_KEY
+      - key: WEBHOOK_SECRET
+        fromService:
+          type: web
+          name: ai-orchestra-api
+          envVarKey: WEBHOOK_SECRET
+      - key: LLM_API_KEY
+        sync: false

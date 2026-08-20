@@ -7,7 +7,18 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from redis.asyncio import Redis
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, select
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    select,
+)
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -24,6 +35,7 @@ class Base(DeclarativeBase):
 
 class KnowledgeDocument(Base):
     __tablename__ = "knowledge_documents"
+    __table_args__ = (UniqueConstraint("title", "version", name="uq_document_title_version"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     title: Mapped[str] = mapped_column(String(500), index=True)
@@ -53,9 +65,24 @@ class EventRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     event_type: Mapped[str] = mapped_column(String(200), index=True)
     actor: Mapped[str] = mapped_column(String(128), index=True)
+    external_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
+class ModelArtifact(Base):
+    __tablename__ = "model_artifacts"
+    __table_args__ = (UniqueConstraint("name", "version", name="uq_model_name_version"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSON)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
 
@@ -77,18 +104,72 @@ class Database:
             yield session
 
     async def append_event(
-        self, event_type: str, actor: str, payload: dict[str, Any]
-    ) -> None:
+        self,
+        event_type: str,
+        actor: str,
+        payload: dict[str, Any],
+        external_id: str | None = None,
+    ) -> bool:
         async with self.sessions() as session:
             session.add(
                 EventRecord(
                     id=str(uuid4()),
                     event_type=event_type,
                     actor=actor,
+                    external_id=external_id,
                     payload=payload,
                 )
             )
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                return False
+        return True
+
+    async def recent_events(self, limit: int = 1_000) -> list[EventRecord]:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(EventRecord)
+                .order_by(EventRecord.created_at.desc())
+                .limit(min(limit, 10_000))
+            )
+            return list(result.scalars())
+
+    async def save_model(
+        self,
+        name: str,
+        parameters: dict[str, Any],
+        metrics: dict[str, Any],
+    ) -> ModelArtifact:
+        async with self.sessions() as session:
+            latest_result = await session.execute(
+                select(ModelArtifact.version)
+                .where(ModelArtifact.name == name)
+                .order_by(ModelArtifact.version.desc())
+                .limit(1)
+            )
+            model = ModelArtifact(
+                id=str(uuid4()),
+                name=name,
+                version=(latest_result.scalar_one_or_none() or 0) + 1,
+                parameters=parameters,
+                metrics=metrics,
+            )
+            session.add(model)
             await session.commit()
+            await session.refresh(model)
+            return model
+
+    async def active_model(self, name: str) -> ModelArtifact | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(ModelArtifact)
+                .where(ModelArtifact.name == name)
+                .order_by(ModelArtifact.version.desc())
+                .limit(1)
+            )
+            return result.scalar_one_or_none()
 
     async def next_document_version(self, title: str) -> int:
         async with self.sessions() as session:
@@ -100,6 +181,26 @@ class Database:
             )
             latest = result.scalar_one_or_none()
             return (latest or 0) + 1
+
+    async def existing_document(
+        self, title: str, content_hash: str
+    ) -> tuple[KnowledgeDocument, int] | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(KnowledgeDocument, func.count(KnowledgeChunk.id))
+                .outerjoin(
+                    KnowledgeChunk,
+                    KnowledgeChunk.document_id == KnowledgeDocument.id,
+                )
+                .where(
+                    KnowledgeDocument.title == title,
+                    KnowledgeDocument.content_hash == content_hash,
+                )
+                .group_by(KnowledgeDocument.id)
+                .order_by(KnowledgeDocument.version.desc())
+                .limit(1)
+            )
+            return result.one_or_none()
 
     async def save_document(
         self,
@@ -168,9 +269,7 @@ class ConversationMemory:
     async def history(self, session_id: str) -> list[dict[str, str]]:
         if self.redis:
             try:
-                values = await self.redis.lrange(
-                    f"orchestra:conversation:{session_id}", -50, -1
-                )
+                values = await self.redis.lrange(f"orchestra:conversation:{session_id}", -50, -1)
                 if values:
                     return [json.loads(value) for value in values]
             except Exception:

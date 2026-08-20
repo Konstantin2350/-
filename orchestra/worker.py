@@ -1,9 +1,12 @@
 import asyncio
 
-import httpx
 from celery import Celery
+from sqlalchemy.exc import OperationalError
 
+from orchestra.agents import build_orchestrator
 from orchestra.config import get_settings
+from orchestra.infrastructure import ConversationMemory, Database
+from orchestra.schemas import AgentRequest
 
 
 settings = get_settings()
@@ -28,20 +31,20 @@ def ping() -> dict[str, str]:
 
 @celery_app.task(
     name="orchestra.run_agent",
-    autoretry_for=(httpx.HTTPError,),
+    autoretry_for=(OperationalError, OSError),
     retry_backoff=True,
     retry_kwargs={"max_retries": 5},
 )
 def run_agent(payload: dict) -> dict:
     async def execute() -> dict:
-        headers = {"x-api-key": settings.api_key} if settings.api_key else {}
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{settings.internal_api_url.rstrip('/')}/v1/orchestrate",
-                json=payload,
-                headers=headers,
-            )
-            response.raise_for_status()
-            return response.json()
+        database = Database(settings)
+        memory = ConversationMemory(settings)
+        orchestrator, _, _, _, _ = build_orchestrator(settings, database, memory)
+        try:
+            response = await orchestrator.execute(AgentRequest(**payload))
+            return response.model_dump(mode="json")
+        finally:
+            await memory.close()
+            await database.close()
 
     return asyncio.run(execute())

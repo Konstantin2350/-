@@ -19,7 +19,9 @@ from orchestra.schemas import (
     CRMExtractResponse,
     CallAnalysis,
     Citation,
+    DealPredictRequest,
     DealHistoryItem,
+    DealTrainingExample,
     KnowledgeAnswer,
     KnowledgeDocumentResponse,
     TaskDraft,
@@ -28,8 +30,29 @@ from orchestra.schemas import (
 
 TOKEN_RE = re.compile(r"[\wа-яё-]+", re.IGNORECASE)
 SEARCH_STOPWORDS = {
-    "а", "без", "в", "для", "до", "и", "из", "как", "к", "на", "о", "от",
-    "по", "при", "с", "у", "через", "что", "кто", "the", "a", "an", "how",
+    "а",
+    "без",
+    "в",
+    "для",
+    "до",
+    "и",
+    "из",
+    "как",
+    "к",
+    "на",
+    "о",
+    "от",
+    "по",
+    "при",
+    "с",
+    "у",
+    "через",
+    "что",
+    "кто",
+    "the",
+    "a",
+    "an",
+    "how",
 }
 
 
@@ -40,19 +63,13 @@ def tokens(text: str) -> list[str]:
 def lexical_roots(text: str) -> set[str]:
     """Lightweight language-agnostic roots improve local search without ML models."""
     return {
-        word[:5] if len(word) > 6 else word
-        for word in tokens(text)
-        if word not in SEARCH_STOPWORDS
+        word[:5] if len(word) > 6 else word for word in tokens(text) if word not in SEARCH_STOPWORDS
     }
 
 
 def focused_excerpt(text: str, query_roots: set[str], limit: int = 500) -> str:
     lowered = text.lower()
-    positions = sorted(
-        position
-        for root in query_roots
-        if (position := lowered.find(root)) >= 0
-    )
+    positions = sorted(position for root in query_roots if (position := lowered.find(root)) >= 0)
     focus = positions[len(positions) // 2] if positions else 0
     start = max(0, focus - limit // 3)
     if start:
@@ -76,9 +93,7 @@ class LLMClient:
     def enabled(self) -> bool:
         return bool(self.settings.llm_api_key)
 
-    async def complete(
-        self, system: str, user: str, temperature: float = 0.2
-    ) -> str | None:
+    async def complete(self, system: str, user: str, temperature: float = 0.2) -> str | None:
         if not self.enabled:
             return None
         async with httpx.AsyncClient(timeout=90) as client:
@@ -99,11 +114,14 @@ class LLMClient:
 
 
 class Embeddings:
-    """Local hashing embeddings keep RAG operational without an external AI key."""
+    """OpenAI embeddings with deterministic local fallback."""
 
     dimensions = 256
 
-    def encode(self, text: str) -> list[float]:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    def local_encode(self, text: str) -> list[float]:
         vector = [0.0] * self.dimensions
         for word, count in Counter(tokens(text)).items():
             digest = hashlib.blake2b(word.encode(), digest_size=8).digest()
@@ -112,6 +130,25 @@ class Embeddings:
             vector[index] += sign * (1 + math.log(count))
         norm = math.sqrt(sum(value * value for value in vector)) or 1
         return [value / norm for value in vector]
+
+    async def encode_many(self, values: list[str]) -> list[list[float]]:
+        if not self.settings.llm_api_key:
+            return [self.local_encode(value) for value in values]
+        async with httpx.AsyncClient(timeout=90) as client:
+            response = await client.post(
+                f"{self.settings.llm_base_url.rstrip('/')}/embeddings",
+                headers={"Authorization": f"Bearer {self.settings.llm_api_key}"},
+                json={
+                    "model": self.settings.embedding_model,
+                    "input": values,
+                },
+            )
+            response.raise_for_status()
+            ordered = sorted(response.json()["data"], key=lambda item: item["index"])
+            return [item["embedding"] for item in ordered]
+
+    async def encode(self, text: str) -> list[float]:
+        return (await self.encode_many([text]))[0]
 
     @staticmethod
     def similarity(left: list[float], right: list[float]) -> float:
@@ -125,17 +162,29 @@ class KnowledgeService:
         self.db = db
         self.settings = settings
         self.llm = llm
-        self.embeddings = Embeddings()
+        self.embeddings = Embeddings(settings)
 
     def extract_text(self, filename: str, content: bytes) -> str:
         extension = Path(filename).suffix.lower()
         if extension not in self.supported_extensions:
             raise ValueError("Supported formats: PDF, DOCX, TXT, MD")
         if extension == ".pdf":
-            return "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages)
+            if not content.startswith(b"%PDF"):
+                raise ValueError("Invalid PDF signature")
+            try:
+                return "\n".join(
+                    page.extract_text() or "" for page in PdfReader(io.BytesIO(content)).pages
+                )
+            except Exception as error:
+                raise ValueError("Unreadable PDF document") from error
         if extension == ".docx":
-            document = DocxDocument(io.BytesIO(content))
-            return "\n".join(paragraph.text for paragraph in document.paragraphs)
+            if not content.startswith(b"PK"):
+                raise ValueError("Invalid DOCX signature")
+            try:
+                document = DocxDocument(io.BytesIO(content))
+                return "\n".join(paragraph.text for paragraph in document.paragraphs)
+            except Exception as error:
+                raise ValueError("Unreadable DOCX document") from error
         return content.decode("utf-8", errors="replace")
 
     def chunk(self, text: str) -> list[str]:
@@ -165,15 +214,35 @@ class KnowledgeService:
     ) -> KnowledgeDocumentResponse:
         if len(content) > self.settings.max_upload_bytes:
             raise ValueError("Document exceeds configured upload limit")
+        resolved_title = title or Path(filename).stem
+        content_hash = hashlib.sha256(content).hexdigest()
+        existing = await self.db.existing_document(resolved_title, content_hash)
+        if existing:
+            document, chunk_count = existing
+            return KnowledgeDocumentResponse(
+                id=as_uuid(document.id),
+                title=document.title,
+                version=document.version,
+                chunks=chunk_count,
+                created_at=document.created_at,
+            )
         text = self.extract_text(filename, content)
+        if len(text) > self.settings.max_document_text_chars:
+            raise ValueError("Extracted document text exceeds configured limit")
         chunks = self.chunk(text)
         if not chunks:
             raise ValueError("Document contains no readable text")
         document = await self.db.save_document(
-            title=title or Path(filename).stem,
+            title=resolved_title,
             source_name=filename,
-            content_hash=hashlib.sha256(content).hexdigest(),
-            chunks=[(chunk, self.embeddings.encode(chunk)) for chunk in chunks],
+            content_hash=content_hash,
+            chunks=list(
+                zip(
+                    chunks,
+                    await self.embeddings.encode_many(chunks),
+                    strict=True,
+                )
+            ),
         )
         return KnowledgeDocumentResponse(
             id=as_uuid(document.id),
@@ -184,7 +253,7 @@ class KnowledgeService:
         )
 
     async def search(self, question: str, limit: int = 5) -> list[Citation]:
-        query_embedding = self.embeddings.encode(question)
+        query_embedding = await self.embeddings.encode(question)
         query_words = lexical_roots(question)
         ranked: list[tuple[float, Any, Any]] = []
         stored = await self.db.all_chunks()
@@ -223,16 +292,13 @@ class KnowledgeService:
                 citations=[],
             )
         context = "\n\n".join(
-            f"[{index}] {citation.excerpt}"
-            for index, citation in enumerate(citations, start=1)
+            f"[{index}] {citation.excerpt}" for index, citation in enumerate(citations, start=1)
         )
         generated = await self.llm.complete(
             "Отвечай только по контексту. После утверждений ставь номера источников [1].",
             f"Вопрос: {question}\n\nКонтекст:\n{context}",
         )
-        answer = generated or (
-            f"По базе знаний найдено: {citations[0].excerpt} [1]"
-        )
+        answer = generated or (f"По базе знаний найдено: {citations[0].excerpt} [1]")
         return KnowledgeAnswer(answer=answer, citations=citations)
 
 
@@ -310,6 +376,81 @@ class CRMService:
             results.append({"customer_id": item.customer_id, "score": round(min(score, 1), 3)})
         return sorted(results, key=lambda item: item["score"], reverse=True)
 
+    def train_deal_model(
+        self, examples: list[DealTrainingExample]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        features = [self._deal_features(item) for item in examples]
+        labels = [1.0 if item.won else 0.0 for item in examples]
+        if len(set(labels)) < 2:
+            raise ValueError("Training data must contain both won and lost deals")
+        weights = [0.0] * len(features[0])
+        learning_rate = 0.4
+        regularization = 0.01
+        for _ in range(600):
+            gradients = [0.0] * len(weights)
+            for row, label in zip(features, labels, strict=True):
+                prediction = self._sigmoid(sum(w * x for w, x in zip(weights, row, strict=True)))
+                for index, value in enumerate(row):
+                    gradients[index] += (prediction - label) * value
+            for index in range(len(weights)):
+                penalty = regularization * weights[index] if index else 0
+                weights[index] -= learning_rate * (gradients[index] / len(features) + penalty)
+        probabilities = [
+            self._sigmoid(sum(w * x for w, x in zip(weights, row, strict=True))) for row in features
+        ]
+        accuracy = sum(
+            (probability >= 0.5) == bool(label)
+            for probability, label in zip(probabilities, labels, strict=True)
+        ) / len(labels)
+        positive_rate = sum(labels) / len(labels)
+        return (
+            {
+                "weights": [round(value, 8) for value in weights],
+                "features": [
+                    "bias",
+                    "amount_log",
+                    "days_open",
+                    "activities",
+                    "positive_intent",
+                    "negative_intent",
+                ],
+            },
+            {
+                "training_examples": len(examples),
+                "training_accuracy": round(accuracy, 3),
+                "positive_rate": round(positive_rate, 3),
+            },
+        )
+
+    def predict_deal(self, item: DealPredictRequest, parameters: dict[str, Any]) -> float:
+        weights = parameters.get("weights", [])
+        features = self._deal_features(item)
+        if len(weights) != len(features):
+            raise ValueError("Stored deal model is incompatible")
+        return round(
+            self._sigmoid(
+                sum(weight * value for weight, value in zip(weights, features, strict=True))
+            ),
+            4,
+        )
+
+    def _deal_features(self, item: DealTrainingExample | DealPredictRequest) -> list[float]:
+        words = set(tokens(item.text))
+        positive = {"готов", "купить", "договор", "счет", "оплата", "бюджет"}
+        negative = {"дорого", "подумаю", "отказ", "неинтересно", "позже"}
+        return [
+            1.0,
+            min(math.log1p(max(item.amount, 0)) / 15, 1),
+            min(item.days_open / 180, 1),
+            min(item.activities / 50, 1),
+            min(len(words & positive) / 3, 1),
+            min(len(words & negative) / 3, 1),
+        ]
+
+    @staticmethod
+    def _sigmoid(value: float) -> float:
+        return 1 / (1 + math.exp(-max(-30, min(30, value))))
+
 
 class CallService:
     positive_words = {"спасибо", "отлично", "подходит", "договорились", "хорошо", "да"}
@@ -323,7 +464,9 @@ class CallService:
         word_set = set(tokens(transcript))
         positive = len(word_set & self.positive_words)
         negative = len(word_set & self.negative_words)
-        sentiment = "positive" if positive > negative else "negative" if negative > positive else "neutral"
+        sentiment = (
+            "positive" if positive > negative else "negative" if negative > positive else "neutral"
+        )
         matched: list[str] = []
         missing: list[str] = []
         for step in script:
@@ -333,7 +476,9 @@ class CallService:
         score = len(matched) / len(script) if script else 1.0
         action_items = []
         for sentence in re.split(r"(?<=[.!?])\s+", transcript):
-            if re.search(r"\b(нужно|надо|отправ|позвон|подготов|соглас|до\s+\d|завтра)\w*", sentence, re.I):
+            if re.search(
+                r"\b(нужно|надо|отправ|позвон|подготов|соглас|до\s+\d|завтра)\w*", sentence, re.I
+            ):
                 action_items.append(sentence.strip())
         crm_result = self.crm.extract(transcript)
         feedback = []
@@ -343,7 +488,9 @@ class CallService:
             feedback.append("Уточните причину недовольства и подтвердите, что услышали клиента.")
         if not action_items:
             feedback.append("Зафиксируйте конкретный следующий шаг и срок.")
-        summary_sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", transcript) if part.strip()]
+        summary_sentences = [
+            part.strip() for part in re.split(r"(?<=[.!?])\s+", transcript) if part.strip()
+        ]
         emotion_signals = [f"Тональность: {sentiment}"]
         if transcript.count("!") >= 2:
             emotion_signals.append("Повышенная эмоциональность")
@@ -369,7 +516,9 @@ class TaskService:
         title = (sentences[0] if sentences else text)[:120]
         deadline = self._deadline(text)
         lowered = text.lower()
-        priority = "high" if any(word in lowered for word in ("срочно", "критично", "asap")) else "normal"
+        priority = (
+            "high" if any(word in lowered for word in ("срочно", "критично", "asap")) else "normal"
+        )
         checklist = sentences[1:8] or [
             "Уточнить ожидаемый результат",
             "Выполнить работу",

@@ -20,9 +20,7 @@ class Bitrix24Client:
 
     def __init__(self, settings: Settings) -> None:
         self.webhook_url = (
-            settings.bitrix_webhook_url.rstrip("/")
-            if settings.bitrix_webhook_url
-            else None
+            settings.bitrix_webhook_url.rstrip("/") if settings.bitrix_webhook_url else None
         )
 
     def validate_method(self, method: str) -> None:
@@ -43,9 +41,7 @@ class Bitrix24Client:
             )
         return payload
 
-    async def batch(
-        self, calls: list[tuple[str, dict[str, Any]]]
-    ) -> dict[str, Any]:
+    async def batch(self, calls: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
         if len(calls) > 50:
             raise ValueError("Bitrix24 supports at most 50 commands per batch")
         command: dict[str, str] = {}
@@ -83,6 +79,39 @@ MCP_TOOLS = [
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
             },
             "required": ["question"],
+        },
+    },
+    {
+        "name": "crm_extract",
+        "description": "Extract safe CRM field updates and conflicting suggestions",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string"},
+                "current_fields": {"type": "object"},
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "call_analyze",
+        "description": "Analyze a call transcript against a sales script",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "sales_script": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["transcript"],
+        },
+    },
+    {
+        "name": "process_from_text",
+        "description": "Compile a natural-language workflow into validated Orchestra DSL",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"description": {"type": "string"}},
+            "required": ["description"],
         },
     },
 ]

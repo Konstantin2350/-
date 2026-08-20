@@ -52,10 +52,7 @@ class Orchestrator:
             ("content", ("напиши", "письмо", "описание", "meta", "презентац")),
             ("chat", ("поддерж", "оператор", "онбординг", "консультац")),
         ]
-        scores = {
-            agent: sum(keyword in text for keyword in keywords)
-            for agent, keywords in rules
-        }
+        scores = {agent: sum(keyword in text for keyword in keywords) for agent, keywords in rules}
         winner = max(scores, key=scores.get)
         return winner if scores[winner] else "chat"
 
@@ -83,9 +80,7 @@ class Orchestrator:
         return response
 
     async def _crm(self, request: AgentRequest) -> AgentResponse:
-        extraction = self.crm.extract(
-            request.message, request.context.get("current_fields", {})
-        )
+        extraction = self.crm.extract(request.message, request.context.get("current_fields", {}))
         probability = self.crm.score_deal(request.message, extraction.entities)
         return AgentResponse(
             agent="crm",
@@ -105,16 +100,18 @@ class Orchestrator:
         )
 
     async def _calls(self, request: AgentRequest) -> AgentResponse:
-        analysis = self.calls.analyze(
-            request.message, request.context.get("sales_script", [])
-        )
+        analysis = self.calls.analyze(request.message, request.context.get("sales_script", []))
         return AgentResponse(
             agent="calls",
             answer="Звонок разобран: сформированы резюме, оценка скрипта и следующие шаги.",
             data=analysis.model_dump(),
             actions=[
                 {"tool": "bitrix.timeline.add", "status": "proposed"},
-                {"tool": "bitrix.activity.create", "status": "proposed", "items": analysis.action_items},
+                {
+                    "tool": "bitrix.activity.create",
+                    "status": "proposed",
+                    "items": analysis.action_items,
+                },
             ],
             requires_human=analysis.relevance == "irrelevant",
         )
@@ -128,9 +125,7 @@ class Orchestrator:
         )
 
     async def _tasks(self, request: AgentRequest) -> AgentResponse:
-        draft = self.tasks.create(
-            request.message, request.context.get("available_assignees", [])
-        )
+        draft = self.tasks.create(request.message, request.context.get("available_assignees", []))
         return AgentResponse(
             agent="tasks",
             answer="Подготовлен проект задачи с чек-листом, исполнителем и рисками.",
