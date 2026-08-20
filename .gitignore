@@ -23,6 +23,7 @@ test-results/
 # Service artifacts (screenshots, output)
 artifacts/
 orchestra.db
+*.db
 *.sqlite3
 *.png
 *.jpg

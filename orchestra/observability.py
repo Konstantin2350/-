@@ -4,7 +4,6 @@ from fastapi import Request
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.responses import Response
 
-
 HTTP_REQUESTS = Counter(
     "orchestra_http_requests_total",
     "HTTP requests processed by ИИ-Оркестр",

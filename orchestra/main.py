@@ -41,16 +41,16 @@ from orchestra.schemas import (
     ChatRequest,
     ContentRequest,
     CRMExtractRequest,
+    DealHistoryItem,
     DealModelTrainRequest,
     DealPredictRequest,
-    DealHistoryItem,
-    KPIForecastRequest,
     KnowledgeQuery,
+    KPIForecastRequest,
     MCPRequest,
+    PresentationRequest,
     ProcessDefinition,
     ProcessMiningRequest,
     ProcessNLRequest,
-    PresentationRequest,
     ProjectDigestRequest,
     SpeechRequest,
     TaskCreateRequest,
@@ -58,7 +58,7 @@ from orchestra.schemas import (
     TrainingGenerateRequest,
     WebhookEnvelope,
 )
-from orchestra.security import Authenticator, RateLimiter, ROLE_LEVELS
+from orchestra.security import ROLE_LEVELS, Authenticator, RateLimiter
 from orchestra.worker import celery_app
 
 

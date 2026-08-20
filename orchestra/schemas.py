@@ -4,7 +4,6 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, HttpUrl
 
-
 AgentName = Literal["crm", "calls", "chat", "knowledge", "tasks", "content"]
 
 

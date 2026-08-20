@@ -9,7 +9,6 @@ from redis.asyncio import Redis
 
 from orchestra.config import Settings
 
-
 ROLE_LEVELS = {"viewer": 10, "operator": 20, "manager": 30, "admin": 40}
 
 

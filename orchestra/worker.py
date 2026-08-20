@@ -8,7 +8,6 @@ from orchestra.config import get_settings
 from orchestra.infrastructure import ConversationMemory, Database
 from orchestra.schemas import AgentRequest
 
-
 settings = get_settings()
 celery_app = Celery(
     "ai-orchestra",

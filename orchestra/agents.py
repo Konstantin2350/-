@@ -1,5 +1,3 @@
-from typing import Any
-
 from orchestra.config import Settings
 from orchestra.infrastructure import ConversationMemory, Database
 from orchestra.schemas import (
@@ -8,11 +6,10 @@ from orchestra.schemas import (
     AgentResponse,
     ChatRequest,
     ChatResponse,
-    TaskCreateRequest,
 )
 from orchestra.services import (
-    CRMService,
     CallService,
+    CRMService,
     KnowledgeService,
     LLMClient,
     TaskService,
@@ -84,7 +81,9 @@ class Orchestrator:
         probability = self.crm.score_deal(request.message, extraction.entities)
         return AgentResponse(
             agent="crm",
-            answer="Данные клиента извлечены. Изменения существующих полей вынесены на подтверждение.",
+            answer=(
+                "Данные клиента извлечены. Изменения существующих полей вынесены на подтверждение."
+            ),
             data={
                 "extraction": extraction.model_dump(),
                 "deal_probability": probability,

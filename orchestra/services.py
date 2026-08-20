@@ -15,18 +15,17 @@ from pypdf import PdfReader
 from orchestra.config import Settings
 from orchestra.infrastructure import Database, as_uuid
 from orchestra.schemas import (
-    CRMEntity,
-    CRMExtractResponse,
     CallAnalysis,
     Citation,
-    DealPredictRequest,
+    CRMEntity,
+    CRMExtractResponse,
     DealHistoryItem,
+    DealPredictRequest,
     DealTrainingExample,
     KnowledgeAnswer,
     KnowledgeDocumentResponse,
     TaskDraft,
 )
-
 
 TOKEN_RE = re.compile(r"[\wа-яё-]+", re.IGNORECASE)
 SEARCH_STOPWORDS = {
@@ -460,7 +459,6 @@ class CallService:
         self.crm = crm
 
     def analyze(self, transcript: str, script: list[str]) -> CallAnalysis:
-        lowered = transcript.lower()
         word_set = set(tokens(transcript))
         positive = len(word_set & self.positive_words)
         negative = len(word_set & self.negative_words)
