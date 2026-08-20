@@ -405,6 +405,11 @@ def test_action_engine_confirmation_execution_and_tenant_isolation(tmp_path):
         tmp_path,
         api_keys="manager-a:manager:tenant-a,manager-b:manager:tenant-b",
     ) as client:
+        forbidden_method = client.post(
+            "/v1/bitrix/call",
+            headers=headers_a,
+            json={"method": "crm.deal.delete", "params": {"id": 42}},
+        )
 
         async def fake_bitrix_call(method, params):
             return {"result": {"method": method, "id": params["id"]}}
@@ -431,11 +436,6 @@ def test_action_engine_confirmation_execution_and_tenant_isolation(tmp_path):
         )
         executed = client.post(f"/v1/actions/{action_id}/execute", headers=headers_a)
         tenant_b_actions = client.get("/v1/actions", headers=headers_b)
-        forbidden_method = client.post(
-            "/v1/bitrix/call",
-            headers=headers_a,
-            json={"method": "crm.deal.delete", "params": {"id": 42}},
-        )
 
     assert created.status_code == 201
     assert duplicate.json()["id"] == action_id

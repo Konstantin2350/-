@@ -54,6 +54,10 @@ class ActionEngine:
         params = action.payload.get("params", {})
         if not method:
             raise WorkflowConflict("Confirmed action must include Bitrix method and params")
+        try:
+            self.bitrix.validate_method(method)
+        except ValueError as error:
+            raise WorkflowConflict(str(error)) from error
         await self.db.update_action(action_id, tenant_id, status="executing", error=None)
         try:
             result = await self.bitrix.call(method, params)
