@@ -25,6 +25,10 @@ artifacts/
 logs/
 *.log
 
+# Graphify local usage statistics
+graphify-out/cost.json
+graphify-out/.graphify_root
+
 # OS / editor
 .DS_Store
 Thumbs.db

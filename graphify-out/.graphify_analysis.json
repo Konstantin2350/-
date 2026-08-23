@@ -1,0 +1,115 @@
+{
+  "communities": {
+    "0": [
+      "package",
+      "package_description",
+      "package_engines",
+      "package_engines_node",
+      "package_license",
+      "package_main",
+      "package_name",
+      "package_type",
+      "package_version"
+    ],
+    "1": [
+      "src_index",
+      "src_index_app",
+      "src_index_askperplexity",
+      "src_index_capturescreenshot",
+      "src_index_chromium",
+      "src_index_express",
+      "src_index_fs",
+      "src_index_path"
+    ],
+    "2": [
+      "dotenv",
+      "express",
+      "package_dependencies",
+      "package_dependencies_dotenv",
+      "package_dependencies_express",
+      "package_dependencies_playwright",
+      "playwright"
+    ],
+    "3": [
+      "package_scripts",
+      "package_scripts_dev",
+      "package_scripts_start"
+    ]
+  },
+  "cohesion": {
+    "0": 0.2222222222222222,
+    "1": 0.25,
+    "2": 0.2857142857142857,
+    "3": 0.6666666666666666
+  },
+  "gods": [
+    {
+      "id": "package_scripts",
+      "label": "scripts",
+      "degree": 3
+    },
+    {
+      "id": "package_engines",
+      "label": "engines",
+      "degree": 2
+    },
+    {
+      "id": "package_dependencies_dotenv",
+      "label": "dotenv",
+      "degree": 2
+    },
+    {
+      "id": "package_dependencies_express",
+      "label": "express",
+      "degree": 2
+    },
+    {
+      "id": "package_dependencies_playwright",
+      "label": "playwright",
+      "degree": 2
+    },
+    {
+      "id": "package_engines_node",
+      "label": "node",
+      "degree": 1
+    },
+    {
+      "id": "package_license",
+      "label": "license",
+      "degree": 1
+    },
+    {
+      "id": "package_main",
+      "label": "main",
+      "degree": 1
+    },
+    {
+      "id": "src_index_app",
+      "label": "app",
+      "degree": 1
+    },
+    {
+      "id": "src_index_chromium",
+      "label": "{ chromium }",
+      "degree": 1
+    }
+  ],
+  "surprises": [],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `dependencies` connect `Community 2` to `Community 0`?",
+      "why": "High betweenness centrality (0.258) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `scripts` connect `Community 3` to `Community 0`?",
+      "why": "High betweenness centrality (0.102) - this node is a cross-community bridge."
+    },
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `description`, `node`, `license` to the rest of the system?",
+      "why": "17 weakly-connected nodes found - possible documentation gaps or missing edges."
+    }
+  ]
+}
