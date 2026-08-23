@@ -1,0 +1,14 @@
+{
+  "package.json": {
+    "mtime": 0.0,
+    "seen": 1787466502.9902856,
+    "ast_hash": "b4ba42facd8805cf0b3e56d364affea4",
+    "semantic_hash": "b4ba42facd8805cf0b3e56d364affea4"
+  },
+  "src/index.js": {
+    "mtime": 0.0,
+    "seen": 1787466502.9902894,
+    "ast_hash": "114b8039a2ec1dd262d192f3186e5646",
+    "semantic_hash": "114b8039a2ec1dd262d192f3186e5646"
+  }
+}

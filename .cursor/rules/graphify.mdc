@@ -1,0 +1,16 @@
+---
+description: use the local code map to reduce unnecessary file reads
+alwaysApply: false
+---
+
+Use the local Graphify map in `graphify-out/` for broad architecture questions,
+dependency tracing, or when the relevant files are not known yet.
+
+- Prefer `graphify query "<question>"`, `graphify path "<A>" "<B>"`, or
+  `graphify explain "<concept>"` before broad Read/Grep/Glob exploration.
+- If the CLI is unavailable, consult `graphify-out/GRAPH_REPORT.md` or
+  `graphify-out/graph.json` directly.
+- Once the relevant file is known, read that exact source file for accurate edits.
+- Skip the map for known-file and single-file tasks; querying it would add overhead.
+- Prefer exact symbols, paths, and targeted ranges; do not re-read unchanged files.
+- After changing code, run `graphify update .` (local AST parsing, no API cost).
