@@ -1,6 +1,6 @@
 ---
 description: use the local code map to reduce unnecessary file reads
-alwaysApply: true
+alwaysApply: false
 ---
 
 Use the local Graphify map in `graphify-out/` for broad architecture questions,

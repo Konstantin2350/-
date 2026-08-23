@@ -28,6 +28,7 @@ logs/
 # Graphify local usage statistics
 graphify-out/cost.json
 graphify-out/.graphify_root
+graphify-out/cache/last_query_stamp
 
 # OS / editor
 .DS_Store
