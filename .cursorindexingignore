@@ -1,0 +1,6 @@
+# Graphify query data stays available on demand but does not pollute semantic search.
+graphify-out/graph.json
+graphify-out/graph.html
+graphify-out/manifest.json
+graphify-out/.graphify_analysis.json
+graphify-out/cache/

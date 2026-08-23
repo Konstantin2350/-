@@ -12,4 +12,5 @@ dependency tracing, or when the relevant files are not known yet.
   `graphify-out/graph.json` directly.
 - Once the relevant file is known, read that exact source file for accurate edits.
 - Skip the map for known-file and single-file tasks; querying it would add overhead.
+- Prefer exact symbols, paths, and targeted ranges; do not re-read unchanged files.
 - After changing code, run `graphify update .` (local AST parsing, no API cost).
