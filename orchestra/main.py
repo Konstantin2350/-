@@ -4,6 +4,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 from fastapi import (
@@ -18,11 +19,12 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sqlalchemy import text
 
 from orchestra import __version__
 from orchestra.agents import build_orchestrator
+from orchestra.campaigns import CampaignRegistry, LeadQualifier
 from orchestra.capabilities import (
     AnalyticsService,
     AudioService,
@@ -34,7 +36,7 @@ from orchestra.capabilities import (
 from orchestra.config import Settings, get_settings
 from orchestra.employees import EmployeeRegistry
 from orchestra.infrastructure import ConversationMemory, Database
-from orchestra.integrations import MCP_TOOLS, Bitrix24Client
+from orchestra.integrations import MCP_TOOLS, Bitrix24Client, WazzupClient
 from orchestra.observability import AGENT_RUNS, metrics_middleware, metrics_response
 from orchestra.schemas import (
     ActionConfirmRequest,
@@ -53,6 +55,8 @@ from orchestra.schemas import (
     HandoffReplyRequest,
     KnowledgeQuery,
     KPIForecastRequest,
+    LeadIntakeRequest,
+    LeadUpdateRequest,
     MCPRequest,
     PersistTaskRequest,
     PresentationRequest,
@@ -68,6 +72,7 @@ from orchestra.schemas import (
     TaskUpdateRequest,
     TrainingEvaluateRequest,
     TrainingGenerateRequest,
+    WazzupWebhook,
     WebhookEnvelope,
 )
 from orchestra.security import ROLE_LEVELS, Authenticator, RateLimiter
@@ -81,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     memory = ConversationMemory(settings)
     orchestrator, knowledge, crm, calls, tasks = build_orchestrator(settings, db, memory)
     bitrix = Bitrix24Client(settings)
+    wazzup = WazzupClient(settings)
     action_engine = ActionEngine(db, bitrix)
     process_engine = ProcessEngine(db, orchestrator, settings)
     authenticator = Authenticator(settings)
@@ -91,6 +97,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     training = TrainingService(knowledge.embeddings)
     analytics = AnalyticsService()
     employees = EmployeeRegistry(settings, orchestrator)
+    campaigns = CampaignRegistry(settings)
+    lead_qualifier = LeadQualifier()
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -118,7 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.orchestrator = orchestrator
     app.state.bitrix = bitrix
+    app.state.wazzup = wazzup
     app.state.employees = employees
+    app.state.campaigns = campaigns
 
     def action_payload(action) -> dict[str, Any]:
         return {
@@ -160,6 +170,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "updated_at": handoff.updated_at,
         }
 
+    def lead_payload(lead) -> dict[str, Any]:
+        return {
+            "id": lead.id,
+            "campaign_code": lead.campaign_code,
+            "external_id": lead.external_id,
+            "session_id": lead.session_id,
+            "channel": lead.channel,
+            "name": lead.name,
+            "phone": lead.phone,
+            "answers": lead.answers,
+            "history": lead.history,
+            "status": lead.status,
+            "priority": lead.priority,
+            "qualification_score": lead.qualification_score,
+            "next_question": lead.next_question,
+            "handoff_id": lead.handoff_id,
+            "created_at": lead.created_at,
+            "updated_at": lead.updated_at,
+        }
+
+    def campaign_payload(campaign) -> dict[str, Any]:
+        contact_links = {}
+        for channel in campaign.channels:
+            try:
+                campaigns.destination_url(campaign, channel)
+            except ValueError:
+                continue
+            contact_links[channel] = campaigns.public_link(campaign, channel)
+        return {
+            **campaign.model_dump(mode="json"),
+            "public_link": campaigns.public_link(campaign),
+            "contact_links": contact_links,
+            "configured_channels": list(contact_links),
+        }
+
     def task_payload(task) -> dict[str, Any]:
         return {
             "id": task.id,
@@ -193,8 +238,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_id = request.headers.get("x-request-id", str(uuid4()))
         public_paths = {"/health", "/ready", "/docs", "/openapi.json", "/redoc"}
         is_webhook = request.url.path.startswith("/v1/webhooks/")
+        is_public_redirect = request.url.path.startswith("/r/")
         principal = authenticator.from_request(request)
-        if request.url.path not in public_paths and not is_webhook and not principal:
+        if (
+            request.url.path not in public_paths
+            and not is_webhook
+            and not is_public_redirect
+            and not principal
+        ):
             return JSONResponse(
                 {"detail": "Authentication required", "request_id": request_id},
                 status_code=401,
@@ -208,6 +259,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "/v1/bitrix",
                     "/v1/processes",
                     "/v1/jobs",
+                    "/v1/integrations",
                     "/v1/analytics",
                     "/v1/crm/deal-model",
                     "/v1/actions",
@@ -302,6 +354,331 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/metrics", include_in_schema=False)
     async def metrics():
         return metrics_response()
+
+    async def redirect_to_campaign_channel(campaign_code: str, channel: str | None = None):
+        campaign = campaigns.get(campaign_code)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        try:
+            destination = campaigns.destination_url(campaign, channel)
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        resolved_channel = channel or campaign.channel
+        await db.append_event(
+            "campaign.link_clicked",
+            "public",
+            {
+                "campaign_code": campaign.code,
+                "source": campaign.source,
+                "channel": resolved_channel,
+            },
+            tenant_id=campaign.tenant_id,
+        )
+        return RedirectResponse(destination, status_code=307)
+
+    @app.get("/r/{campaign_code}/{channel}", tags=["campaigns"], include_in_schema=False)
+    async def campaign_channel_redirect(campaign_code: str, channel: str):
+        return await redirect_to_campaign_channel(campaign_code, channel)
+
+    @app.get("/r/{campaign_code}", tags=["campaigns"], include_in_schema=False)
+    async def campaign_redirect(campaign_code: str):
+        return await redirect_to_campaign_channel(campaign_code)
+
+    @app.get("/v1/campaigns", tags=["campaigns"])
+    async def list_campaigns(request: Request):
+        return {
+            "campaigns": [
+                campaign_payload(campaign)
+                for campaign in campaigns.list(request.state.principal.tenant_id)
+            ]
+        }
+
+    @app.get("/v1/campaigns/{campaign_code}", tags=["campaigns"])
+    async def get_campaign(campaign_code: str, request: Request):
+        campaign = campaigns.get(campaign_code, request.state.principal.tenant_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        return campaign_payload(campaign)
+
+    @app.post("/v1/webhooks/leads/{campaign_code}", tags=["campaigns"])
+    async def ingest_campaign_lead(
+        campaign_code: str,
+        body: LeadIntakeRequest,
+        x_webhook_secret: Annotated[str | None, Header()] = None,
+        x_tenant_id: Annotated[str, Header()] = "default",
+    ):
+        expected_secret = settings.webhook_secret_map.get(x_tenant_id)
+        if expected_secret and not secrets.compare_digest(x_webhook_secret or "", expected_secret):
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        if settings.webhook_secret_map and not expected_secret:
+            raise HTTPException(status_code=401, detail="Unknown webhook tenant")
+        campaign = campaigns.get(campaign_code, x_tenant_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        existing = await db.find_lead(x_tenant_id, campaign_code, body.external_id)
+        extracted = crm.extract(body.message).entities
+        name = (
+            body.name
+            or (existing.name if existing else None)
+            or extracted.name
+            or lead_qualifier.extract_name(body.message)
+        )
+        phone = lead_qualifier.normalize_phone(
+            body.phone or (existing.phone if existing else None) or extracted.phone
+        )
+        answers = {**(existing.answers if existing else {}), **body.answers}
+        qualification = lead_qualifier.evaluate(campaign, body.message, name, phone, answers)
+        values = {
+            "session_id": body.session_id or body.external_id,
+            "channel": body.channel,
+            **{
+                key: value
+                for key, value in qualification.items()
+                if key != "reply" and key != "handoff_required"
+            },
+        }
+        lead, created = await db.upsert_lead(
+            x_tenant_id, campaign_code, body.external_id, values, body.message
+        )
+        history = list(lead.history)
+        reply = str(qualification["reply"])
+        if not history or history[-1] != {"role": "assistant", "content": reply}:
+            history.append({"role": "assistant", "content": reply})
+            lead = await db.update_lead(lead.id, x_tenant_id, {"history": history[-100:]})
+            assert lead
+
+        if qualification["handoff_required"] and not lead.handoff_id:
+            handoff = await db.create_handoff(
+                tenant_id=x_tenant_id,
+                session_id=lead.session_id,
+                user_id=lead.phone or lead.external_id,
+                channel=lead.channel,
+                reason=(
+                    f"Лид кампании {campaign.name}; приоритет {lead.priority}; "
+                    f"SLA {campaign.response_sla_minutes} мин."
+                ),
+                history=lead.history,
+            )
+            lead = await db.update_lead(lead.id, x_tenant_id, {"handoff_id": handoff.id})
+            assert lead
+
+        if created:
+            await db.append_event(
+                "campaign.lead_created",
+                "lead-webhook",
+                {
+                    "campaign_code": campaign.code,
+                    "lead_id": lead.id,
+                    "priority": lead.priority,
+                },
+                external_id=f"lead:{x_tenant_id}:{campaign.code}:{body.external_id}",
+                tenant_id=x_tenant_id,
+            )
+        return {
+            "created": created,
+            "reply": reply,
+            "lead": lead_payload(lead),
+        }
+
+    @app.post("/v1/webhooks/wazzup/{campaign_code}", tags=["campaigns"])
+    async def wazzup_webhook(
+        campaign_code: str,
+        body: WazzupWebhook,
+        request: Request,
+        x_tenant_id: Annotated[str, Header()] = "default",
+    ):
+        if settings.wazzup_webhook_token:
+            authorization = request.headers.get("authorization", "")
+            bearer = (
+                authorization.removeprefix("Bearer ").strip()
+                if authorization.startswith("Bearer ")
+                else ""
+            )
+            supplied_token = request.query_params.get("token", "") or bearer
+            if not secrets.compare_digest(supplied_token, settings.wazzup_webhook_token):
+                raise HTTPException(status_code=401, detail="Invalid Wazzup webhook token")
+        if body.test:
+            return {"status": "ok"}
+        campaign = campaigns.get(campaign_code, x_tenant_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        processed = []
+        for message in body.messages:
+            if (
+                message.status != "inbound"
+                or message.is_echo
+                or message.message_type != "text"
+                or not message.text
+                or message.chat_type not in campaign.channels
+            ):
+                continue
+            event_id = f"wazzup:{x_tenant_id}:{message.message_id}"
+            if await db.event_exists(event_id, x_tenant_id):
+                processed.append({"message_id": message.message_id, "status": "duplicate"})
+                continue
+            internal_secret = settings.webhook_secret_map.get(x_tenant_id)
+            result = await ingest_campaign_lead(
+                campaign_code,
+                LeadIntakeRequest(
+                    external_id=f"wazzup:{message.chat_type}:{message.chat_id}",
+                    session_id=f"wazzup:{message.chat_id}",
+                    channel=message.chat_type,
+                    message=message.text,
+                    name=message.contact.name,
+                    phone=message.contact.phone,
+                ),
+                x_webhook_secret=internal_secret,
+                x_tenant_id=x_tenant_id,
+            )
+            lead_info = result["lead"]
+            if not lead_info["handoff_id"]:
+                handoff = await db.create_handoff(
+                    tenant_id=x_tenant_id,
+                    session_id=lead_info["session_id"],
+                    user_id=message.contact.username or message.chat_id,
+                    channel=message.chat_type,
+                    reason=(
+                        f"Входящий лид Wazzup: {campaign.name}; "
+                        f"SLA {campaign.response_sla_minutes} мин."
+                    ),
+                    history=lead_info["history"],
+                )
+                lead = await db.update_lead(
+                    lead_info["id"], x_tenant_id, {"handoff_id": handoff.id}
+                )
+                assert lead
+                result["lead"] = lead_payload(lead)
+
+            delivery = "disabled"
+            if settings.wazzup_auto_reply:
+                try:
+                    sent = await wazzup.send_message(
+                        channel_id=message.channel_id,
+                        chat_type=message.chat_type,
+                        chat_id=message.chat_id,
+                        text=result["reply"],
+                        crm_message_id=f"orchestra:{message.message_id}",
+                    )
+                    delivery = "sent"
+                    result["provider_message_id"] = sent.get("messageId")
+                except Exception:
+                    delivery = "failed"
+            await db.append_event(
+                "wazzup.message_processed",
+                "wazzup-webhook",
+                {
+                    "campaign_code": campaign.code,
+                    "lead_id": result["lead"]["id"],
+                    "chat_type": message.chat_type,
+                    "delivery": delivery,
+                },
+                external_id=event_id,
+                tenant_id=x_tenant_id,
+            )
+            processed.append(
+                {
+                    "message_id": message.message_id,
+                    "status": "processed",
+                    "delivery": delivery,
+                    "lead_id": result["lead"]["id"],
+                    "handoff_id": result["lead"]["handoff_id"],
+                }
+            )
+        return {"status": "ok", "processed": processed}
+
+    @app.post(
+        "/v1/integrations/wazzup/subscribe/{campaign_code}",
+        tags=["integrations"],
+    )
+    async def subscribe_wazzup(campaign_code: str, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        if not campaigns.get(campaign_code, tenant_id):
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if not settings.wazzup_api_key:
+            raise HTTPException(status_code=409, detail="WAZZUP_API_KEY is not configured")
+        if not settings.wazzup_webhook_token:
+            raise HTTPException(status_code=409, detail="WAZZUP_WEBHOOK_TOKEN is not configured")
+        callback = (
+            f"{settings.public_base_url.rstrip('/')}/v1/webhooks/wazzup/{campaign_code}"
+            f"?token={quote_plus(settings.wazzup_webhook_token)}"
+        )
+        try:
+            provider_result = await wazzup.subscribe(callback)
+        except Exception as error:
+            raise HTTPException(status_code=502, detail="Wazzup setup failed") from error
+        return {"status": "configured", "provider": provider_result}
+
+    @app.get("/v1/leads", tags=["campaigns"])
+    async def list_leads(
+        request: Request,
+        campaign_code: str | None = None,
+        status: str | None = None,
+    ):
+        records = await db.list_leads(request.state.principal.tenant_id, campaign_code, status)
+        return {"leads": [lead_payload(item) for item in records]}
+
+    @app.patch("/v1/leads/{lead_id}", tags=["campaigns"])
+    async def update_lead(lead_id: str, body: LeadUpdateRequest, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        current = await db.get_lead(lead_id, tenant_id)
+        if not current:
+            raise HTTPException(status_code=404, detail="Lead not found")
+        campaign = campaigns.get(current.campaign_code, tenant_id)
+        if not campaign:
+            raise HTTPException(status_code=409, detail="Campaign configuration is missing")
+        answers = {**current.answers, **body.answers}
+        name = body.name or current.name
+        phone = lead_qualifier.normalize_phone(body.phone or current.phone)
+        last_message = next(
+            (item["content"] for item in reversed(current.history) if item.get("role") == "client"),
+            "",
+        )
+        qualification = lead_qualifier.evaluate(campaign, last_message, name, phone, answers)
+        values = {
+            key: value
+            for key, value in qualification.items()
+            if key not in {"reply", "handoff_required"}
+        }
+        if body.status:
+            values["status"] = body.status
+        updated = await db.update_lead(lead_id, tenant_id, values)
+        assert updated
+        return lead_payload(updated)
+
+    @app.get("/v1/campaigns/{campaign_code}/metrics", tags=["campaigns"])
+    async def campaign_metrics(campaign_code: str, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        if not campaigns.get(campaign_code, tenant_id):
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        leads = await db.list_leads(tenant_id, campaign_code)
+        events = await db.recent_events(10_000, tenant_id)
+        status_counts: dict[str, int] = {}
+        priority_counts: dict[str, int] = {}
+        for lead in leads:
+            status_counts[lead.status] = status_counts.get(lead.status, 0) + 1
+            priority_counts[lead.priority] = priority_counts.get(lead.priority, 0) + 1
+        click_events = [
+            event
+            for event in events
+            if event.event_type == "campaign.link_clicked"
+            and event.payload.get("campaign_code") == campaign_code
+        ]
+        clicks_by_channel: dict[str, int] = {}
+        for event in click_events:
+            channel = str(event.payload.get("channel", "unknown"))
+            clicks_by_channel[channel] = clicks_by_channel.get(channel, 0) + 1
+        return {
+            "campaign_code": campaign_code,
+            "clicks": len(click_events),
+            "clicks_by_channel": clicks_by_channel,
+            "leads": len(leads),
+            "with_phone": sum(bool(lead.phone) for lead in leads),
+            "handoffs": sum(bool(lead.handoff_id) for lead in leads),
+            "statuses": status_counts,
+            "priorities": priority_counts,
+        }
 
     @app.post("/v1/orchestrate", tags=["agents"])
     async def orchestrate(body: AgentRequest, request: Request):

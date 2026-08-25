@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default=300, ge=10, le=100_000)
     cors_origins: str = ""
     employee_config_path: str = "config/ai_employees.json"
+    campaign_config_path: str = "config/campaigns.json"
+    public_base_url: str = "http://localhost:8787"
+    blogger_contact_phone: str | None = None
+    blogger_telegram_username: str | None = None
+    wazzup_api_base_url: str = "https://api.wazzup24.com"
+    wazzup_api_key: str | None = None
+    wazzup_webhook_token: str | None = None
+    wazzup_auto_reply: bool = False
 
     @field_validator("database_url", mode="before")
     @classmethod

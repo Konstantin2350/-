@@ -3,6 +3,7 @@ import math
 import struct
 import wave
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -566,6 +567,178 @@ def test_operator_handoff_queue_and_session_tenant_isolation(tmp_path):
     assert replied.json()["delivery"] == "recorded"
     assert len(isolated.json()["history"]) == 2
     assert tenant_b_search.json()["citations"] == []
+
+
+def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    with make_client(
+        tmp_path,
+        blogger_contact_phone="+7 (999) 111-22-33",
+        blogger_telegram_username="@test_owner",
+        public_base_url="https://orchestra.example",
+    ) as client:
+        campaign = client.get(f"/v1/campaigns/{campaign_code}")
+        redirect = client.get(f"/r/{campaign_code}", follow_redirects=False)
+        telegram_redirect = client.get(f"/r/{campaign_code}/telegram", follow_redirects=False)
+        first = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={
+                "external_id": "wa-dialog-1",
+                "channel": "whatsapp",
+                "message": "Подскажите цену квартиры",
+            },
+        )
+        second = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={
+                "external_id": "wa-dialog-1",
+                "channel": "whatsapp",
+                "message": "Я Анна, хочу посмотреть квартиру",
+                "phone": "8 (999) 123-45-67",
+                "answers": {
+                    "goal": "для себя",
+                    "budget": "15 млн",
+                    "timeline": "в течение месяца",
+                    "payment": "наличные",
+                    "viewing_time": "завтра в 15:00",
+                },
+            },
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+        handoffs = client.get("/v1/operator/handoffs")
+        metrics = client.get(f"/v1/campaigns/{campaign_code}/metrics")
+
+    assert campaign.status_code == 200
+    assert campaign.json()["public_link"] == ("https://orchestra.example/r/gelendzhik-blogger-2708")
+    assert campaign.json()["configured_channels"] == ["whatsapp", "telegram"]
+    assert campaign.json()["contact_links"]["telegram"] == (
+        "https://orchestra.example/r/gelendzhik-blogger-2708/telegram"
+    )
+    assert redirect.status_code == 307
+    assert redirect.headers["location"].startswith("https://wa.me/79991112233?text=")
+    assert telegram_redirect.status_code == 307
+    assert telegram_redirect.headers["location"].startswith("https://t.me/test_owner?text=")
+    assert first.status_code == 200
+    assert first.json()["created"] is True
+    assert first.json()["lead"]["handoff_id"] is None
+    assert first.json()["lead"]["next_question"]
+    assert second.status_code == 200
+    assert second.json()["created"] is False
+    assert second.json()["lead"]["name"] == "Анна"
+    assert second.json()["lead"]["phone"] == "+79991234567"
+    assert second.json()["lead"]["status"] == "qualified"
+    assert second.json()["lead"]["priority"] == "hot"
+    assert second.json()["lead"]["handoff_id"]
+    assert len(leads.json()["leads"]) == 1
+    assert len(handoffs.json()["handoffs"]) == 1
+    assert metrics.json() == {
+        "campaign_code": campaign_code,
+        "clicks": 2,
+        "clicks_by_channel": {"telegram": 1, "whatsapp": 1},
+        "leads": 1,
+        "with_phone": 1,
+        "handoffs": 1,
+        "statuses": {"qualified": 1},
+        "priorities": {"hot": 1},
+    }
+
+
+def test_campaign_lead_webhook_secret_and_status_update(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    with make_client(tmp_path, webhook_secret="campaign-secret") as client:
+        rejected = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={"external_id": "wa-2", "message": "Хочу посмотреть"},
+        )
+        accepted = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            headers={"x-webhook-secret": "campaign-secret"},
+            json={
+                "external_id": "wa-2",
+                "message": "Хочу посмотреть",
+                "phone": "+79990000000",
+            },
+        )
+        lead_id = accepted.json()["lead"]["id"]
+        updated = client.patch(
+            f"/v1/leads/{lead_id}",
+            json={"status": "viewing_scheduled", "answers": {"viewing_time": "27 августа"}},
+        )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "viewing_scheduled"
+
+
+def test_wazzup_telegram_webhook_creates_lead_replies_and_deduplicates(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    payload = {
+        "messages": [
+            {
+                "messageId": "wazzup-message-1",
+                "channelId": "telegram-channel-1",
+                "chatType": "telegram",
+                "chatId": "telegram-chat-42",
+                "type": "text",
+                "status": "inbound",
+                "isEcho": False,
+                "text": "Я Мария, пишу по квартире из ролика блогера",
+                "contact": {"name": "Мария", "username": "maria_example"},
+            }
+        ]
+    }
+    with make_client(
+        tmp_path,
+        wazzup_api_key="test-api-key",
+        wazzup_webhook_token="test-webhook-token",
+        wazzup_auto_reply=True,
+        public_base_url="https://orchestra.example",
+    ) as client:
+        send_message = AsyncMock(
+            return_value={"messageId": "wazzup-reply-1", "chatId": "telegram-chat-42"}
+        )
+        subscribe = AsyncMock(return_value={"status": "configured"})
+        client.app.state.wazzup.send_message = send_message
+        client.app.state.wazzup.subscribe = subscribe
+
+        unauthorized = client.post(f"/v1/webhooks/wazzup/{campaign_code}", json=payload)
+        probe = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json={"test": True},
+        )
+        first = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=payload,
+        )
+        duplicate = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=payload,
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+        handoffs = client.get("/v1/operator/handoffs")
+        subscribed = client.post(f"/v1/integrations/wazzup/subscribe/{campaign_code}")
+
+    assert unauthorized.status_code == 401
+    assert probe.json() == {"status": "ok"}
+    assert first.status_code == 200
+    assert first.json()["processed"][0]["delivery"] == "sent"
+    assert first.json()["processed"][0]["handoff_id"]
+    assert duplicate.json()["processed"] == [
+        {"message_id": "wazzup-message-1", "status": "duplicate"}
+    ]
+    assert len(leads.json()["leads"]) == 1
+    assert leads.json()["leads"][0]["channel"] == "telegram"
+    assert leads.json()["leads"][0]["name"] == "Мария"
+    assert len(handoffs.json()["handoffs"]) == 1
+    send_message.assert_awaited_once()
+    assert send_message.await_args.kwargs["chat_id"] == "telegram-chat-42"
+    assert send_message.await_args.kwargs["chat_type"] == "telegram"
+    assert subscribed.status_code == 200
+    subscribe.assert_awaited_once_with(
+        "https://orchestra.example/v1/webhooks/wazzup/"
+        "gelendzhik-blogger-2708?token=test-webhook-token"
+    )
 
 
 def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):

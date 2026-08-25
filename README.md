@@ -53,6 +53,10 @@ curl -X POST http://localhost:8787/v1/employees/elena_finance/invoke \
   миграции Alembic, точный allowlist Bitrix24, security headers и request ID.
 - Операторы: сохраняемая очередь handoff, claim, история диалога, ответы и
   закрытие обращения.
+- Рекламные лиды без Bitrix24: отслеживаемые ссылки, код источника, квалификация,
+  самостоятельный реестр, передача человеку и метрики кампании.
+- Wazzup: входящие WhatsApp/Telegram-сообщения, защита и дедупликация webhook,
+  автоответ в исходный чат и регистрация callback через API.
 
 Внешний LLM необязателен для текста, RAG и аналитики: без ключа работает локальный
 предсказуемый режим. Расшифровка реального аудио и синтез речи требуют
@@ -116,6 +120,7 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 - `/v1/actions`, `/v1/actions/{id}/confirm`, `/execute`, `/enqueue`
 - `/v1/processes/instances`, `/approve`, `/resume`
 - `/v1/operator/handoffs`, `/claim`, `/reply`
+- `/v1/campaigns`, `/v1/webhooks/leads/{campaign_code}`, `/v1/leads`
 - `/v1/training/tests`, `/v1/training/evaluate`
 - `/v1/analytics/process-mining`, `/v1/analytics/kpi-forecast`,
   `/v1/projects/digest`
@@ -147,6 +152,13 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 - `API_KEY` и `WEBHOOK_SECRET`
 - `BITRIX_WEBHOOK_URL` для действий в Bitrix24
 - `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` для генеративных ответов
+
+Для кампании блогера по квартире в Геленджике задайте
+`PUBLIC_BASE_URL`, `BLOGGER_CONTACT_PHONE` и `BLOGGER_TELEGRAM_USERNAME`.
+Для двустороннего обмена через Wazzup также нужны `WAZZUP_API_KEY`,
+`WAZZUP_WEBHOOK_TOKEN` и `WAZZUP_AUTO_REPLY=true`.
+Пошаговый регламент запуска находится в `docs/BLOGGER_GELENDZHIK_RUNBOOK.md`.
+Контактные данные храните только в `.env`.
 
 Для Railway/Render используйте `Dockerfile` и readiness check `/ready`, который
 проверяет PostgreSQL, Redis и Celery worker. API масштабируется горизонтально; состояние диалогов хранится в

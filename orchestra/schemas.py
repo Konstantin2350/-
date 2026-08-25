@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 AgentName = Literal["crm", "calls", "chat", "knowledge", "tasks", "content", "finance"]
 
@@ -139,6 +139,68 @@ class ChatResponse(BaseModel):
     handoff: bool = False
     handoff_reason: str | None = None
     handoff_id: UUID | None = None
+
+
+class CampaignConfig(BaseModel):
+    code: str = Field(pattern=r"^[a-z0-9-]+$", max_length=100)
+    name: str = Field(min_length=1, max_length=300)
+    source: str = Field(min_length=1, max_length=100)
+    launch_date: date
+    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    channels: list[Literal["whatsapp", "telegram", "phone", "web", "api"]] = Field(
+        default_factory=lambda: ["whatsapp"], min_length=1, max_length=5
+    )
+    tenant_id: str = Field(default="default", max_length=128)
+    operator_id: str = Field(default="owner", max_length=128)
+    response_sla_minutes: int = Field(default=5, ge=1, le=1440)
+    code_phrase: str = Field(min_length=1, max_length=200)
+    prefilled_message: str = Field(min_length=1, max_length=1000)
+    qualification_questions: dict[str, str] = Field(min_length=1, max_length=20)
+
+
+class LeadIntakeRequest(BaseModel):
+    external_id: str = Field(min_length=1, max_length=255)
+    session_id: str | None = Field(default=None, max_length=128)
+    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    message: str = Field(min_length=1, max_length=30_000)
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class LeadUpdateRequest(BaseModel):
+    status: (
+        Literal["new", "qualifying", "qualified", "contacted", "viewing_scheduled", "won", "lost"]
+        | None
+    ) = None
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class WazzupContact(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    username: str | None = Field(default=None, max_length=100)
+    phone: str | None = Field(default=None, max_length=30)
+
+
+class WazzupMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    message_id: str = Field(alias="messageId", min_length=1, max_length=255)
+    channel_id: str = Field(alias="channelId", min_length=1, max_length=255)
+    chat_type: Literal["whatsapp", "telegram"] = Field(alias="chatType")
+    chat_id: str = Field(alias="chatId", min_length=1, max_length=255)
+    message_type: str = Field(default="text", alias="type", max_length=50)
+    status: str = Field(default="inbound", max_length=50)
+    text: str | None = Field(default=None, max_length=30_000)
+    is_echo: bool = Field(default=False, alias="isEcho")
+    contact: WazzupContact = Field(default_factory=WazzupContact)
+
+
+class WazzupWebhook(BaseModel):
+    test: bool = False
+    messages: list[WazzupMessage] = Field(default_factory=list, max_length=100)
 
 
 class KnowledgeDocumentResponse(BaseModel):
