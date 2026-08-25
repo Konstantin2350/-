@@ -27,31 +27,36 @@ GitHub проекта, добавьте Windows-компьютер и настр
 
 ## 2. Оркестр на Windows
 
-Запустите Оркестр локально по инструкции в основном `README.md`. В `.env`
-создайте отдельный ключ для моста:
-
-```dotenv
-API_KEYS=call-watcher-key:operator:personal
-```
-
-Скопируйте каталог `tools/windows-call-watcher` на Windows, затем:
+Откройте репозиторий Оркестра на Windows и выполните:
 
 ```powershell
+Set-Location .\tools\windows-call-watcher
 Copy-Item config.example.json config.json
 notepad config.json
 PowerShell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Установщик:
+
+- создаёт `.venv` и устанавливает Оркестр;
+- устанавливает бесплатный `faster-whisper`;
+- создаёт папку `%USERPROFILE%\Documents\SamsungCalls`;
+- регистрирует автозапуск «AI Orchestra API» и «AI Orchestra Call Watcher»;
+- запускает оба процесса сразу.
+
 В `config.json` укажите:
 
 - `watch_dir` — папку, куда Syncthing складывает записи;
 - `api_url` — адрес Оркестра, обычно `http://localhost:8787`;
-- `api_key` — значение `call-watcher-key`, не весь текст `API_KEYS`;
 - `process_existing: false` — при первом запуске не отправлять старые записи.
 
-Установщик загружает `faster-whisper`, создаёт задачу Windows «AI Orchestra Call
-Watcher» и запускает её при входе пользователя. Модель `small` работает на CPU;
-первый запуск дольше обычного, потому что модель загружается один раз.
+По умолчанию API доступен только этому компьютеру (`127.0.0.1`), поэтому ключ не
+требуется. Если вы зададите в `.env`
+`API_KEYS=call-watcher-key:operator:personal`, внесите значение
+`call-watcher-key` в поле `api_key` файла `config.json`.
+
+Модель `small` работает на CPU; первый звонок обрабатывается дольше обычного,
+потому что модель загружается один раз.
 
 Ручная проверка:
 

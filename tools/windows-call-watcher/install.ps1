@@ -3,23 +3,37 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Python = (Get-Command py.exe -ErrorAction Stop).Source
+$Launcher = (Get-Command py.exe -ErrorAction Stop).Source
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+$VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
 $Script = Join-Path $PSScriptRoot "watch_calls.py"
 $Example = Join-Path $PSScriptRoot "config.example.json"
 
 if (-not (Test-Path $ConfigPath)) {
     Copy-Item $Example $ConfigPath
-    Write-Host "Создан config.json. Укажите в нём папку записей и запустите install.ps1 ещё раз."
-    exit 2
+    Write-Host "Создан config.json с папкой Documents\SamsungCalls."
 }
 
-& $Python -m pip install --upgrade faster-whisper
+if (-not (Test-Path $VenvPython)) {
+    & $Launcher -m venv (Join-Path $RepoRoot ".venv")
+}
+& $VenvPython -m pip install --upgrade pip
+& $VenvPython -m pip install -e $RepoRoot
+& $VenvPython -m pip install --upgrade faster-whisper
 if ($LASTEXITCODE -ne 0) {
-    throw "Не удалось установить faster-whisper"
+    throw "Не удалось установить зависимости Оркестра"
 }
 
-$Action = New-ScheduledTaskAction `
-    -Execute $Python `
+$Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+$WatchDir = [Environment]::ExpandEnvironmentVariables($Config.watch_dir)
+New-Item -ItemType Directory -Path $WatchDir -Force | Out-Null
+
+$ApiAction = New-ScheduledTaskAction `
+    -Execute $VenvPython `
+    -Argument "-m uvicorn orchestra.main:app --host 127.0.0.1 --port 8787" `
+    -WorkingDirectory $RepoRoot
+$WatcherAction = New-ScheduledTaskAction `
+    -Execute $VenvPython `
     -Argument "`"$Script`" --config `"$ConfigPath`""
 $Trigger = New-ScheduledTaskTrigger -AtLogOn
 $Settings = New-ScheduledTaskSettingsSet `
@@ -29,12 +43,23 @@ $Settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1)
 
 Register-ScheduledTask `
-    -TaskName "AI Orchestra Call Watcher" `
-    -Description "Переводит записи Samsung в текст и передаёт их ИИ-Оркестру" `
-    -Action $Action `
+    -TaskName "AI Orchestra API" `
+    -Description "Запускает локальный API ИИ-Оркестра" `
+    -Action $ApiAction `
     -Trigger $Trigger `
     -Settings $Settings `
     -Force | Out-Null
 
+Register-ScheduledTask `
+    -TaskName "AI Orchestra Call Watcher" `
+    -Description "Переводит записи Samsung в текст и передаёт их ИИ-Оркестру" `
+    -Action $WatcherAction `
+    -Trigger $Trigger `
+    -Settings $Settings `
+    -Force | Out-Null
+
+Start-ScheduledTask -TaskName "AI Orchestra API"
+Start-Sleep -Seconds 3
 Start-ScheduledTask -TaskName "AI Orchestra Call Watcher"
-Write-Host "Готово: обработчик звонков установлен и запущен."
+Write-Host "Готово: Оркестр и обработчик звонков установлены и запущены."
+Write-Host "Папка для синхронизации Samsung: $WatchDir"
