@@ -55,6 +55,8 @@ curl -X POST http://localhost:8787/v1/employees/elena_finance/invoke \
   закрытие обращения.
 - Рекламные лиды без Bitrix24: отслеживаемые ссылки, код источника, квалификация,
   самостоятельный реестр, передача человеку и метрики кампании.
+- Wazzup: входящие WhatsApp/Telegram-сообщения, защита и дедупликация webhook,
+  автоответ в исходный чат и регистрация callback через API.
 
 Внешний LLM необязателен для текста, RAG и аналитики: без ключа работает локальный
 предсказуемый режим. Расшифровка реального аудио и синтез речи требуют
@@ -153,6 +155,8 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 
 Для кампании блогера по квартире в Геленджике задайте
 `PUBLIC_BASE_URL`, `BLOGGER_CONTACT_PHONE` и `BLOGGER_TELEGRAM_USERNAME`.
+Для двустороннего обмена через Wazzup также нужны `WAZZUP_API_KEY`,
+`WAZZUP_WEBHOOK_TOKEN` и `WAZZUP_AUTO_REPLY=true`.
 Пошаговый регламент запуска находится в `docs/BLOGGER_GELENDZHIK_RUNBOOK.md`.
 Контактные данные храните только в `.env`.
 

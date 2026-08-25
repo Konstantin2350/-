@@ -4,6 +4,7 @@ import re
 import secrets
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 from fastapi import (
@@ -35,7 +36,7 @@ from orchestra.capabilities import (
 from orchestra.config import Settings, get_settings
 from orchestra.employees import EmployeeRegistry
 from orchestra.infrastructure import ConversationMemory, Database
-from orchestra.integrations import MCP_TOOLS, Bitrix24Client
+from orchestra.integrations import MCP_TOOLS, Bitrix24Client, WazzupClient
 from orchestra.observability import AGENT_RUNS, metrics_middleware, metrics_response
 from orchestra.schemas import (
     ActionConfirmRequest,
@@ -71,6 +72,7 @@ from orchestra.schemas import (
     TaskUpdateRequest,
     TrainingEvaluateRequest,
     TrainingGenerateRequest,
+    WazzupWebhook,
     WebhookEnvelope,
 )
 from orchestra.security import ROLE_LEVELS, Authenticator, RateLimiter
@@ -84,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     memory = ConversationMemory(settings)
     orchestrator, knowledge, crm, calls, tasks = build_orchestrator(settings, db, memory)
     bitrix = Bitrix24Client(settings)
+    wazzup = WazzupClient(settings)
     action_engine = ActionEngine(db, bitrix)
     process_engine = ProcessEngine(db, orchestrator, settings)
     authenticator = Authenticator(settings)
@@ -123,6 +126,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.db = db
     app.state.orchestrator = orchestrator
     app.state.bitrix = bitrix
+    app.state.wazzup = wazzup
     app.state.employees = employees
     app.state.campaigns = campaigns
 
@@ -255,6 +259,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "/v1/bitrix",
                     "/v1/processes",
                     "/v1/jobs",
+                    "/v1/integrations",
                     "/v1/analytics",
                     "/v1/crm/deal-model",
                     "/v1/actions",
@@ -475,6 +480,135 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "reply": reply,
             "lead": lead_payload(lead),
         }
+
+    @app.post("/v1/webhooks/wazzup/{campaign_code}", tags=["campaigns"])
+    async def wazzup_webhook(
+        campaign_code: str,
+        body: WazzupWebhook,
+        request: Request,
+        x_tenant_id: Annotated[str, Header()] = "default",
+    ):
+        if settings.wazzup_webhook_token:
+            authorization = request.headers.get("authorization", "")
+            bearer = (
+                authorization.removeprefix("Bearer ").strip()
+                if authorization.startswith("Bearer ")
+                else ""
+            )
+            supplied_token = request.query_params.get("token", "") or bearer
+            if not secrets.compare_digest(supplied_token, settings.wazzup_webhook_token):
+                raise HTTPException(status_code=401, detail="Invalid Wazzup webhook token")
+        if body.test:
+            return {"status": "ok"}
+        campaign = campaigns.get(campaign_code, x_tenant_id)
+        if not campaign:
+            raise HTTPException(status_code=404, detail="Campaign not found")
+
+        processed = []
+        for message in body.messages:
+            if (
+                message.status != "inbound"
+                or message.is_echo
+                or message.message_type != "text"
+                or not message.text
+                or message.chat_type not in campaign.channels
+            ):
+                continue
+            event_id = f"wazzup:{x_tenant_id}:{message.message_id}"
+            if await db.event_exists(event_id, x_tenant_id):
+                processed.append({"message_id": message.message_id, "status": "duplicate"})
+                continue
+            internal_secret = settings.webhook_secret_map.get(x_tenant_id)
+            result = await ingest_campaign_lead(
+                campaign_code,
+                LeadIntakeRequest(
+                    external_id=f"wazzup:{message.chat_type}:{message.chat_id}",
+                    session_id=f"wazzup:{message.chat_id}",
+                    channel=message.chat_type,
+                    message=message.text,
+                    name=message.contact.name,
+                    phone=message.contact.phone,
+                ),
+                x_webhook_secret=internal_secret,
+                x_tenant_id=x_tenant_id,
+            )
+            lead_info = result["lead"]
+            if not lead_info["handoff_id"]:
+                handoff = await db.create_handoff(
+                    tenant_id=x_tenant_id,
+                    session_id=lead_info["session_id"],
+                    user_id=message.contact.username or message.chat_id,
+                    channel=message.chat_type,
+                    reason=(
+                        f"Входящий лид Wazzup: {campaign.name}; "
+                        f"SLA {campaign.response_sla_minutes} мин."
+                    ),
+                    history=lead_info["history"],
+                )
+                lead = await db.update_lead(
+                    lead_info["id"], x_tenant_id, {"handoff_id": handoff.id}
+                )
+                assert lead
+                result["lead"] = lead_payload(lead)
+
+            delivery = "disabled"
+            if settings.wazzup_auto_reply:
+                try:
+                    sent = await wazzup.send_message(
+                        channel_id=message.channel_id,
+                        chat_type=message.chat_type,
+                        chat_id=message.chat_id,
+                        text=result["reply"],
+                        crm_message_id=f"orchestra:{message.message_id}",
+                    )
+                    delivery = "sent"
+                    result["provider_message_id"] = sent.get("messageId")
+                except Exception:
+                    delivery = "failed"
+            await db.append_event(
+                "wazzup.message_processed",
+                "wazzup-webhook",
+                {
+                    "campaign_code": campaign.code,
+                    "lead_id": result["lead"]["id"],
+                    "chat_type": message.chat_type,
+                    "delivery": delivery,
+                },
+                external_id=event_id,
+                tenant_id=x_tenant_id,
+            )
+            processed.append(
+                {
+                    "message_id": message.message_id,
+                    "status": "processed",
+                    "delivery": delivery,
+                    "lead_id": result["lead"]["id"],
+                    "handoff_id": result["lead"]["handoff_id"],
+                }
+            )
+        return {"status": "ok", "processed": processed}
+
+    @app.post(
+        "/v1/integrations/wazzup/subscribe/{campaign_code}",
+        tags=["integrations"],
+    )
+    async def subscribe_wazzup(campaign_code: str, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        if not campaigns.get(campaign_code, tenant_id):
+            raise HTTPException(status_code=404, detail="Campaign not found")
+        if not settings.wazzup_api_key:
+            raise HTTPException(status_code=409, detail="WAZZUP_API_KEY is not configured")
+        if not settings.wazzup_webhook_token:
+            raise HTTPException(status_code=409, detail="WAZZUP_WEBHOOK_TOKEN is not configured")
+        callback = (
+            f"{settings.public_base_url.rstrip('/')}/v1/webhooks/wazzup/{campaign_code}"
+            f"?token={quote_plus(settings.wazzup_webhook_token)}"
+        )
+        try:
+            provider_result = await wazzup.subscribe(callback)
+        except Exception as error:
+            raise HTTPException(status_code=502, detail="Wazzup setup failed") from error
+        return {"status": "configured", "provider": provider_result}
 
     @app.get("/v1/leads", tags=["campaigns"])
     async def list_leads(

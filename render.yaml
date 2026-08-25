@@ -43,6 +43,18 @@ services:
         sync: false
       - key: LLM_API_KEY
         sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: BLOGGER_CONTACT_PHONE
+        sync: false
+      - key: BLOGGER_TELEGRAM_USERNAME
+        sync: false
+      - key: WAZZUP_API_KEY
+        sync: false
+      - key: WAZZUP_WEBHOOK_TOKEN
+        generateValue: true
+      - key: WAZZUP_AUTO_REPLY
+        value: "false"
 
   - type: worker
     name: ai-orchestra-worker

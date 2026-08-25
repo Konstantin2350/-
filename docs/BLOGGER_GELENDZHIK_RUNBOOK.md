@@ -69,7 +69,33 @@ https://домен-оркестра.example/r/gelendzhik-blogger-2708/telegram
 
 ## Шаг 3. Подключить входящие сообщения — сегодня или завтра
 
-Предпочтительный вариант:
+### Через Wazzup
+
+1. В Wazzup открыть «Каналы» → «Добавить канал» → Telegram Personal.
+2. Авторизовать аккаунт `@Konstantin2350`.
+3. В защищённых переменных сервера указать:
+
+```dotenv
+WAZZUP_API_KEY=значение_из_кабинета
+WAZZUP_WEBHOOK_TOKEN=отдельная_случайная_строка
+WAZZUP_AUTO_REPLY=false
+```
+
+Ключи нельзя отправлять в чат или записывать в Git. После пробной входящей заявки
+включить `WAZZUP_AUTO_REPLY=true`.
+
+4. После выкладки вызвать от имени менеджера:
+
+```text
+POST /v1/integrations/wazzup/subscribe/gelendzhik-blogger-2708
+```
+
+Оркестр зарегистрирует callback Wazzup
+`/v1/webhooks/wazzup/gelendzhik-blogger-2708`, примет входящее сообщение,
+создаст лид, передаст его человеку и отправит уточняющий вопрос обратно в тот же
+Telegram-чат.
+
+### Без Wazzup
 
 1. Подключить номер к WhatsApp Business API.
 2. Указать callback:

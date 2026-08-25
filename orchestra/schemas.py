@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 AgentName = Literal["crm", "calls", "chat", "knowledge", "tasks", "content", "finance"]
 
@@ -176,6 +176,31 @@ class LeadUpdateRequest(BaseModel):
     name: str | None = Field(default=None, max_length=200)
     phone: str | None = Field(default=None, max_length=30)
     answers: dict[str, str] = Field(default_factory=dict)
+
+
+class WazzupContact(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    username: str | None = Field(default=None, max_length=100)
+    phone: str | None = Field(default=None, max_length=30)
+
+
+class WazzupMessage(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    message_id: str = Field(alias="messageId", min_length=1, max_length=255)
+    channel_id: str = Field(alias="channelId", min_length=1, max_length=255)
+    chat_type: Literal["whatsapp", "telegram"] = Field(alias="chatType")
+    chat_id: str = Field(alias="chatId", min_length=1, max_length=255)
+    message_type: str = Field(default="text", alias="type", max_length=50)
+    status: str = Field(default="inbound", max_length=50)
+    text: str | None = Field(default=None, max_length=30_000)
+    is_echo: bool = Field(default=False, alias="isEcho")
+    contact: WazzupContact = Field(default_factory=WazzupContact)
+
+
+class WazzupWebhook(BaseModel):
+    test: bool = False
+    messages: list[WazzupMessage] = Field(default_factory=list, max_length=100)
 
 
 class KnowledgeDocumentResponse(BaseModel):

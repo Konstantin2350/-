@@ -315,6 +315,16 @@ class Database:
             )
             return list(result.scalars())
 
+    async def event_exists(self, external_id: str, tenant_id: str = "default") -> bool:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(EventRecord.id).where(
+                    EventRecord.external_id == external_id,
+                    EventRecord.tenant_id == tenant_id,
+                )
+            )
+            return result.scalar_one_or_none() is not None
+
     async def save_model(
         self,
         name: str,

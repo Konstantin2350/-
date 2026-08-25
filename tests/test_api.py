@@ -3,6 +3,7 @@ import math
 import struct
 import wave
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -668,6 +669,76 @@ def test_campaign_lead_webhook_secret_and_status_update(tmp_path):
     assert accepted.status_code == 200
     assert updated.status_code == 200
     assert updated.json()["status"] == "viewing_scheduled"
+
+
+def test_wazzup_telegram_webhook_creates_lead_replies_and_deduplicates(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    payload = {
+        "messages": [
+            {
+                "messageId": "wazzup-message-1",
+                "channelId": "telegram-channel-1",
+                "chatType": "telegram",
+                "chatId": "telegram-chat-42",
+                "type": "text",
+                "status": "inbound",
+                "isEcho": False,
+                "text": "Я Мария, пишу по квартире из ролика блогера",
+                "contact": {"name": "Мария", "username": "maria_example"},
+            }
+        ]
+    }
+    with make_client(
+        tmp_path,
+        wazzup_api_key="test-api-key",
+        wazzup_webhook_token="test-webhook-token",
+        wazzup_auto_reply=True,
+        public_base_url="https://orchestra.example",
+    ) as client:
+        send_message = AsyncMock(
+            return_value={"messageId": "wazzup-reply-1", "chatId": "telegram-chat-42"}
+        )
+        subscribe = AsyncMock(return_value={"status": "configured"})
+        client.app.state.wazzup.send_message = send_message
+        client.app.state.wazzup.subscribe = subscribe
+
+        unauthorized = client.post(f"/v1/webhooks/wazzup/{campaign_code}", json=payload)
+        probe = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json={"test": True},
+        )
+        first = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=payload,
+        )
+        duplicate = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=payload,
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+        handoffs = client.get("/v1/operator/handoffs")
+        subscribed = client.post(f"/v1/integrations/wazzup/subscribe/{campaign_code}")
+
+    assert unauthorized.status_code == 401
+    assert probe.json() == {"status": "ok"}
+    assert first.status_code == 200
+    assert first.json()["processed"][0]["delivery"] == "sent"
+    assert first.json()["processed"][0]["handoff_id"]
+    assert duplicate.json()["processed"] == [
+        {"message_id": "wazzup-message-1", "status": "duplicate"}
+    ]
+    assert len(leads.json()["leads"]) == 1
+    assert leads.json()["leads"][0]["channel"] == "telegram"
+    assert leads.json()["leads"][0]["name"] == "Мария"
+    assert len(handoffs.json()["handoffs"]) == 1
+    send_message.assert_awaited_once()
+    assert send_message.await_args.kwargs["chat_id"] == "telegram-chat-42"
+    assert send_message.await_args.kwargs["chat_type"] == "telegram"
+    assert subscribed.status_code == 200
+    subscribe.assert_awaited_once_with(
+        "https://orchestra.example/v1/webhooks/wazzup/"
+        "gelendzhik-blogger-2708?token=test-webhook-token"
+    )
 
 
 def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):

@@ -78,6 +78,64 @@ class Bitrix24Client:
         return await self.call("batch", {"halt": 0, "cmd": command})
 
 
+class WazzupClient:
+    """Minimal Wazzup transport for Telegram/WhatsApp replies and webhook setup."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.base_url = settings.wazzup_api_base_url.rstrip("/")
+        self.api_key = settings.wazzup_api_key
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    async def send_message(
+        self,
+        *,
+        channel_id: str,
+        chat_type: str,
+        chat_id: str,
+        text: str,
+        crm_message_id: str,
+    ) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("WAZZUP_API_KEY is not configured")
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{self.base_url}/v3/message",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "channelId": channel_id,
+                    "chatType": chat_type,
+                    "chatId": chat_id,
+                    "text": text,
+                    "crmMessageId": crm_message_id,
+                    "clearUnanswered": False,
+                },
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def subscribe(self, webhook_url: str) -> dict[str, Any]:
+        if not self.api_key:
+            raise RuntimeError("WAZZUP_API_KEY is not configured")
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.patch(
+                f"{self.base_url}/v3/webhooks",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "webhooksUri": webhook_url,
+                    "subscriptions": {
+                        "messagesAndStatuses": True,
+                        "contactsAndDealsCreation": False,
+                        "channelsUpdates": True,
+                    },
+                },
+            )
+            response.raise_for_status()
+            return response.json() if response.content else {"status": "configured"}
+
+
 MCP_TOOLS = [
     {
         "name": "orchestra_agent",
