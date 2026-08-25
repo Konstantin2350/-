@@ -63,6 +63,15 @@ class LeadQualifier:
             return None
         return f"+{digits}"
 
+    @staticmethod
+    def extract_name(message: str) -> str | None:
+        match = re.search(
+            r"\b(?:меня\s+зовут|я)\s+([а-яёa-z][а-яёa-z-]{1,49})\b",
+            message,
+            re.IGNORECASE,
+        )
+        return match.group(1).capitalize() if match else None
+
     def evaluate(
         self,
         campaign: CampaignConfig,

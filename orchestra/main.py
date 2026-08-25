@@ -393,7 +393,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         existing = await db.find_lead(x_tenant_id, campaign_code, body.external_id)
         extracted = crm.extract(body.message).entities
-        name = body.name or (existing.name if existing else None) or extracted.name
+        name = (
+            body.name
+            or (existing.name if existing else None)
+            or extracted.name
+            or lead_qualifier.extract_name(body.message)
+        )
         phone = lead_qualifier.normalize_phone(
             body.phone or (existing.phone if existing else None) or extracted.phone
         )

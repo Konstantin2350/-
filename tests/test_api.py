@@ -618,6 +618,7 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
     assert first.json()["lead"]["next_question"]
     assert second.status_code == 200
     assert second.json()["created"] is False
+    assert second.json()["lead"]["name"] == "Анна"
     assert second.json()["lead"]["phone"] == "+79991234567"
     assert second.json()["lead"]["status"] == "qualified"
     assert second.json()["lead"]["priority"] == "hot"
