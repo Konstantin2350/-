@@ -72,17 +72,20 @@ class LeadQualifier:
         answers: dict[str, str],
     ) -> dict[str, object]:
         missing = [
-            key
-            for key in campaign.qualification_questions
-            if not str(answers.get(key, "")).strip()
+            key for key in campaign.qualification_questions if not str(answers.get(key, "")).strip()
         ]
         contact_points = 20 if phone else 0
-        answer_points = round(60 * (len(campaign.qualification_questions) - len(missing)) /
-                              len(campaign.qualification_questions))
+        answer_points = round(
+            60
+            * (len(campaign.qualification_questions) - len(missing))
+            / len(campaign.qualification_questions)
+        )
         intent_points = 20 if any(word in message.lower() for word in self.hot_words) else 0
         score = min(100, contact_points + answer_points + intent_points)
         priority = "hot" if intent_points or score >= 80 else "warm" if score >= 40 else "new"
-        status = "qualified" if phone and not missing else "qualifying" if phone or answers else "new"
+        status = (
+            "qualified" if phone and not missing else "qualifying" if phone or answers else "new"
+        )
         next_question = campaign.qualification_questions[missing[0]] if missing else None
         if next_question:
             reply = f"Спасибо! Чтобы помочь по квартире, уточните: {next_question}"

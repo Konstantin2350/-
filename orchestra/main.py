@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from orchestra import __version__
 from orchestra.agents import build_orchestrator
+from orchestra.campaigns import CampaignRegistry, LeadQualifier
 from orchestra.capabilities import (
     AnalyticsService,
     AudioService,
@@ -31,7 +32,6 @@ from orchestra.capabilities import (
     ProcessService,
     TrainingService,
 )
-from orchestra.campaigns import CampaignRegistry, LeadQualifier
 from orchestra.config import Settings, get_settings
 from orchestra.employees import EmployeeRegistry
 from orchestra.infrastructure import ConversationMemory, Database
@@ -398,14 +398,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             body.phone or (existing.phone if existing else None) or extracted.phone
         )
         answers = {**(existing.answers if existing else {}), **body.answers}
-        qualification = lead_qualifier.evaluate(
-            campaign, body.message, name, phone, answers
-        )
+        qualification = lead_qualifier.evaluate(campaign, body.message, name, phone, answers)
         values = {
             "session_id": body.session_id or body.external_id,
             "channel": body.channel,
-            **{key: value for key, value in qualification.items() if key != "reply"
-               and key != "handoff_required"},
+            **{
+                key: value
+                for key, value in qualification.items()
+                if key != "reply" and key != "handoff_required"
+            },
         }
         lead, created = await db.upsert_lead(
             x_tenant_id, campaign_code, body.external_id, values, body.message
@@ -456,9 +457,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         campaign_code: str | None = None,
         status: str | None = None,
     ):
-        records = await db.list_leads(
-            request.state.principal.tenant_id, campaign_code, status
-        )
+        records = await db.list_leads(request.state.principal.tenant_id, campaign_code, status)
         return {"leads": [lead_payload(item) for item in records]}
 
     @app.patch("/v1/leads/{lead_id}", tags=["campaigns"])
@@ -474,16 +473,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         name = body.name or current.name
         phone = lead_qualifier.normalize_phone(body.phone or current.phone)
         last_message = next(
-            (
-                item["content"]
-                for item in reversed(current.history)
-                if item.get("role") == "client"
-            ),
+            (item["content"] for item in reversed(current.history) if item.get("role") == "client"),
             "",
         )
-        qualification = lead_qualifier.evaluate(
-            campaign, last_message, name, phone, answers
-        )
+        qualification = lead_qualifier.evaluate(campaign, last_message, name, phone, answers)
         values = {
             key: value
             for key, value in qualification.items()
