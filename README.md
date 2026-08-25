@@ -152,8 +152,9 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 - `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` для генеративных ответов
 
 Для кампании блогера по квартире в Геленджике задайте
-`PUBLIC_BASE_URL` и `BLOGGER_CONTACT_PHONE`. Пошаговый регламент запуска находится
-в `docs/BLOGGER_GELENDZHIK_RUNBOOK.md`. Номер храните только в `.env`.
+`PUBLIC_BASE_URL`, `BLOGGER_CONTACT_PHONE` и `BLOGGER_TELEGRAM_USERNAME`.
+Пошаговый регламент запуска находится в `docs/BLOGGER_GELENDZHIK_RUNBOOK.md`.
+Контактные данные храните только в `.env`.
 
 Для Railway/Render используйте `Dockerfile` и readiness check `/ready`, который
 проверяет PostgreSQL, Redis и Celery worker. API масштабируется горизонтально; состояние диалогов хранится в

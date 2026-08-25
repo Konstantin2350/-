@@ -147,6 +147,9 @@ class CampaignConfig(BaseModel):
     source: str = Field(min_length=1, max_length=100)
     launch_date: date
     channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    channels: list[Literal["whatsapp", "telegram", "phone", "web", "api"]] = Field(
+        default_factory=lambda: ["whatsapp"], min_length=1, max_length=5
+    )
     tenant_id: str = Field(default="default", max_length=128)
     operator_id: str = Field(default="owner", max_length=128)
     response_sla_minutes: int = Field(default=5, ge=1, le=1440)
@@ -166,9 +169,10 @@ class LeadIntakeRequest(BaseModel):
 
 
 class LeadUpdateRequest(BaseModel):
-    status: Literal[
-        "new", "qualifying", "qualified", "contacted", "viewing_scheduled", "won", "lost"
-    ] | None = None
+    status: (
+        Literal["new", "qualifying", "qualified", "contacted", "viewing_scheduled", "won", "lost"]
+        | None
+    ) = None
     name: str | None = Field(default=None, max_length=200)
     phone: str | None = Field(default=None, max_length=30)
     answers: dict[str, str] = Field(default_factory=dict)

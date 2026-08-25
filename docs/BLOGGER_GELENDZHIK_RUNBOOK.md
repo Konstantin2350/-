@@ -44,6 +44,7 @@
 ```dotenv
 PUBLIC_BASE_URL=https://домен-оркестра.example
 BLOGGER_CONTACT_PHONE=79990000000
+BLOGGER_TELEGRAM_USERNAME=example_username
 ```
 
 Реальный номер хранится только в `.env`, а не в Git. Ссылка для блогера:
@@ -57,6 +58,13 @@ https://домен-оркестра.example/r/gelendzhik-blogger-2708
 ```text
 Здравствуйте! Пишу по квартире в Геленджике из ролика блогера.
 Код: Геленджик 2708
+```
+
+Отдельные ссылки позволяют увидеть канал каждого перехода:
+
+```text
+https://домен-оркестра.example/r/gelendzhik-blogger-2708/whatsapp
+https://домен-оркестра.example/r/gelendzhik-blogger-2708/telegram
 ```
 
 ## Шаг 3. Подключить входящие сообщения — сегодня или завтра

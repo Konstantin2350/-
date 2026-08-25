@@ -6,6 +6,7 @@
       "source": "blogger",
       "launch_date": "2026-08-27",
       "channel": "whatsapp",
+      "channels": ["whatsapp", "telegram"],
       "tenant_id": "default",
       "operator_id": "owner",
       "response_sla_minutes": 5,

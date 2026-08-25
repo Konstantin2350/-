@@ -186,6 +186,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "updated_at": lead.updated_at,
         }
 
+    def campaign_payload(campaign) -> dict[str, Any]:
+        contact_links = {}
+        for channel in campaign.channels:
+            try:
+                campaigns.destination_url(campaign, channel)
+            except ValueError:
+                continue
+            contact_links[channel] = campaigns.public_link(campaign, channel)
+        return {
+            **campaign.model_dump(mode="json"),
+            "public_link": campaigns.public_link(campaign),
+            "contact_links": contact_links,
+            "configured_channels": list(contact_links),
+        }
+
     def task_payload(task) -> dict[str, Any]:
         return {
             "id": task.id,
@@ -335,31 +350,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def metrics():
         return metrics_response()
 
-    @app.get("/r/{campaign_code}", tags=["campaigns"], include_in_schema=False)
-    async def campaign_redirect(campaign_code: str):
+    async def redirect_to_campaign_channel(campaign_code: str, channel: str | None = None):
         campaign = campaigns.get(campaign_code)
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
         try:
-            destination = campaigns.destination_url(campaign)
+            destination = campaigns.destination_url(campaign, channel)
         except ValueError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+        resolved_channel = channel or campaign.channel
         await db.append_event(
             "campaign.link_clicked",
             "public",
-            {"campaign_code": campaign.code, "source": campaign.source},
+            {
+                "campaign_code": campaign.code,
+                "source": campaign.source,
+                "channel": resolved_channel,
+            },
             tenant_id=campaign.tenant_id,
         )
         return RedirectResponse(destination, status_code=307)
+
+    @app.get("/r/{campaign_code}/{channel}", tags=["campaigns"], include_in_schema=False)
+    async def campaign_channel_redirect(campaign_code: str, channel: str):
+        return await redirect_to_campaign_channel(campaign_code, channel)
+
+    @app.get("/r/{campaign_code}", tags=["campaigns"], include_in_schema=False)
+    async def campaign_redirect(campaign_code: str):
+        return await redirect_to_campaign_channel(campaign_code)
 
     @app.get("/v1/campaigns", tags=["campaigns"])
     async def list_campaigns(request: Request):
         return {
             "campaigns": [
-                {
-                    **campaign.model_dump(mode="json"),
-                    "public_link": campaigns.public_link(campaign),
-                }
+                campaign_payload(campaign)
                 for campaign in campaigns.list(request.state.principal.tenant_id)
             ]
         }
@@ -369,11 +393,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         campaign = campaigns.get(campaign_code, request.state.principal.tenant_id)
         if not campaign:
             raise HTTPException(status_code=404, detail="Campaign not found")
-        return {
-            **campaign.model_dump(mode="json"),
-            "public_link": campaigns.public_link(campaign),
-            "contact_configured": bool(settings.blogger_contact_phone),
-        }
+        return campaign_payload(campaign)
 
     @app.post("/v1/webhooks/leads/{campaign_code}", tags=["campaigns"])
     async def ingest_campaign_lead(
@@ -505,13 +525,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for lead in leads:
             status_counts[lead.status] = status_counts.get(lead.status, 0) + 1
             priority_counts[lead.priority] = priority_counts.get(lead.priority, 0) + 1
+        click_events = [
+            event
+            for event in events
+            if event.event_type == "campaign.link_clicked"
+            and event.payload.get("campaign_code") == campaign_code
+        ]
+        clicks_by_channel: dict[str, int] = {}
+        for event in click_events:
+            channel = str(event.payload.get("channel", "unknown"))
+            clicks_by_channel[channel] = clicks_by_channel.get(channel, 0) + 1
         return {
             "campaign_code": campaign_code,
-            "clicks": sum(
-                event.event_type == "campaign.link_clicked"
-                and event.payload.get("campaign_code") == campaign_code
-                for event in events
-            ),
+            "clicks": len(click_events),
+            "clicks_by_channel": clicks_by_channel,
             "leads": len(leads),
             "with_phone": sum(bool(lead.phone) for lead in leads),
             "handoffs": sum(bool(lead.handoff_id) for lead in leads),

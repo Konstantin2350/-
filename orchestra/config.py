@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     campaign_config_path: str = "config/campaigns.json"
     public_base_url: str = "http://localhost:8787"
     blogger_contact_phone: str | None = None
+    blogger_telegram_username: str | None = None
 
     @field_validator("database_url", mode="before")
     @classmethod

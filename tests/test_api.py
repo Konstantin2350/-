@@ -573,10 +573,12 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
     with make_client(
         tmp_path,
         blogger_contact_phone="+7 (999) 111-22-33",
+        blogger_telegram_username="@test_owner",
         public_base_url="https://orchestra.example",
     ) as client:
         campaign = client.get(f"/v1/campaigns/{campaign_code}")
         redirect = client.get(f"/r/{campaign_code}", follow_redirects=False)
+        telegram_redirect = client.get(f"/r/{campaign_code}/telegram", follow_redirects=False)
         first = client.post(
             f"/v1/webhooks/leads/{campaign_code}",
             json={
@@ -606,12 +608,15 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
         metrics = client.get(f"/v1/campaigns/{campaign_code}/metrics")
 
     assert campaign.status_code == 200
-    assert campaign.json()["public_link"] == (
-        "https://orchestra.example/r/gelendzhik-blogger-2708"
+    assert campaign.json()["public_link"] == ("https://orchestra.example/r/gelendzhik-blogger-2708")
+    assert campaign.json()["configured_channels"] == ["whatsapp", "telegram"]
+    assert campaign.json()["contact_links"]["telegram"] == (
+        "https://orchestra.example/r/gelendzhik-blogger-2708/telegram"
     )
-    assert campaign.json()["contact_configured"] is True
     assert redirect.status_code == 307
     assert redirect.headers["location"].startswith("https://wa.me/79991112233?text=")
+    assert telegram_redirect.status_code == 307
+    assert telegram_redirect.headers["location"].startswith("https://t.me/test_owner?text=")
     assert first.status_code == 200
     assert first.json()["created"] is True
     assert first.json()["lead"]["handoff_id"] is None
@@ -627,7 +632,8 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
     assert len(handoffs.json()["handoffs"]) == 1
     assert metrics.json() == {
         "campaign_code": campaign_code,
-        "clicks": 1,
+        "clicks": 2,
+        "clicks_by_channel": {"telegram": 1, "whatsapp": 1},
         "leads": 1,
         "with_phone": 1,
         "handoffs": 1,

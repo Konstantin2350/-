@@ -30,16 +30,25 @@ class CampaignRegistry:
             return campaign
         return None
 
-    def public_link(self, campaign: CampaignConfig) -> str:
-        return f"{self.settings.public_base_url.rstrip('/')}/r/{campaign.code}"
+    def public_link(self, campaign: CampaignConfig, channel: str | None = None) -> str:
+        suffix = f"/{channel}" if channel else ""
+        return f"{self.settings.public_base_url.rstrip('/')}/r/{campaign.code}{suffix}"
 
-    def destination_url(self, campaign: CampaignConfig) -> str:
-        if campaign.channel != "whatsapp":
-            raise ValueError(f"Public redirect for {campaign.channel} is not configured")
-        phone = re.sub(r"\D", "", self.settings.blogger_contact_phone or "")
-        if not phone:
-            raise ValueError("BLOGGER_CONTACT_PHONE is not configured")
-        return f"https://wa.me/{phone}?text={quote(campaign.prefilled_message)}"
+    def destination_url(self, campaign: CampaignConfig, channel: str | None = None) -> str:
+        resolved_channel = channel or campaign.channel
+        if resolved_channel not in campaign.channels:
+            raise ValueError(f"Channel {resolved_channel} is not enabled for this campaign")
+        if resolved_channel == "whatsapp":
+            phone = re.sub(r"\D", "", self.settings.blogger_contact_phone or "")
+            if not phone:
+                raise ValueError("BLOGGER_CONTACT_PHONE is not configured")
+            return f"https://wa.me/{phone}?text={quote(campaign.prefilled_message)}"
+        if resolved_channel == "telegram":
+            username = (self.settings.blogger_telegram_username or "").removeprefix("@")
+            if not re.fullmatch(r"[A-Za-z0-9_]{5,32}", username):
+                raise ValueError("BLOGGER_TELEGRAM_USERNAME is not configured")
+            return f"https://t.me/{username}?text={quote(campaign.prefilled_message)}"
+        raise ValueError(f"Public redirect for {resolved_channel} is not configured")
 
 
 class LeadQualifier:
