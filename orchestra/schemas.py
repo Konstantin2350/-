@@ -122,6 +122,18 @@ class CallAnalysis(BaseModel):
     crm: CRMExtractResponse
 
 
+class CallIntakeMetadata(BaseModel):
+    source_id: str | None = Field(default=None, min_length=8, max_length=255)
+    source_device: Literal["samsung-fold", "windows-watcher", "manual"] = "windows-watcher"
+    source_path: str | None = Field(default=None, max_length=2_000)
+    recorded_at: datetime | None = None
+    phone: str | None = Field(default=None, max_length=32)
+    contact_name: str | None = Field(default=None, max_length=200)
+    project_id: UUID | None = None
+    sales_script: list[str] = Field(default_factory=list, max_length=50)
+    language: str | None = Field(default="ru", max_length=20)
+
+
 class ChatRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=30_000)

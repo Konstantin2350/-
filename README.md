@@ -34,7 +34,9 @@ curl -X POST http://localhost:8787/v1/employees/elena_finance/invoke \
   изменений полей; оценка вероятности сделки; RFM-поиск повторных продаж.
 - Звонки: Whisper/OpenAI-compatible STT, базовые WAV-сигналы темпа/энергии,
   резюме, тональность, проверка скрипта, рекомендации, следующие действия,
-  фильтрация нерелевантных обращений и подготовка CRM-полей.
+  фильтрация нерелевантных обращений и подготовка CRM-полей. Бесплатный
+  Windows-мост принимает записи Samsung, распознаёт их локальным Whisper,
+  определяет проект и предлагает подтверждаемые задачи без Bitrix24.
 - Чат: Redis-память с локальным резервом, роли sales/support/onboarding,
   поиск по базе знаний и передача оператору с историей; HTTP и WebSocket.
 - RAG: PDF/DOCX/TXT/MD, защита форматов, дедупликация, версионность, chunking,
@@ -111,6 +113,7 @@ curl -X POST http://localhost:8787/v1/knowledge/query \
 Остальные готовые API видны в `/docs`:
 
 - `/v1/calls/transcribe`, `/v1/calls/process-audio`, `/v1/voice/synthesize`
+- `/v1/calls/intake`, `/v1/calls` — автоматический приём записей и история
 - `/v1/processes/from-text`, `/v1/content/generate`,
   `/v1/content/presentation`
 - `/v1/actions`, `/v1/actions/{id}/confirm`, `/execute`, `/enqueue`
@@ -175,3 +178,14 @@ k6 run -e BASE_URL=https://your-host -e VUS=10000 -e HOLD=5m load/k6-chat.js
 ```
 
 Исходный Node.js сервис скриншотов сохранён в `legacy/auto-screen-perplexity`.
+
+## SIM-звонки Samsung без Bitrix24
+
+Полная инструкция для бесплатного потока
+`Samsung Fold → Windows → Whisper → ИИ‑Оркестр` находится в
+`docs/CALL_INGESTION.md`. Windows-мост лежит в
+`tools/windows-call-watcher`; он не отправляет старые записи при первом запуске
+и защищает каждую запись от повторной обработки.
+
+Оркестр создаёт action `orchestra.task.create` в состоянии `proposed`. Задача
+появляется в локальном проекте только после вызовов `/confirm` и `/execute`.

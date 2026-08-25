@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 20 * 1024 * 1024
     max_document_text_chars: int = 5_000_000
     max_audio_bytes: int = 100 * 1024 * 1024
+    call_project_match_threshold: float = Field(default=0.25, ge=0, le=1)
     max_agent_steps: int = Field(default=8, ge=1, le=20)
     rate_limit_per_minute: int = Field(default=300, ge=10, le=100_000)
     cors_origins: str = ""

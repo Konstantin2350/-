@@ -1,4 +1,5 @@
 import io
+import json
 import math
 import struct
 import wave
@@ -80,6 +81,78 @@ def test_call_intelligence_returns_script_gaps_and_actions(tmp_path):
     assert payload["action_items"] == ["Отправьте договор завтра."]
     assert "обсудить бюджет" in payload["missing_steps"]
     assert payload["crm"]["entities"]["name"] == "Иван"
+
+
+def test_call_intake_routes_project_is_idempotent_and_requires_confirmation(tmp_path):
+    headers = {"x-api-key": "manager-key", "Idempotency-Key": "fold-call-0001"}
+    transcript = (
+        "Обсудили аренду помещения на Северной. "
+        "Нужно подготовить договор аренды завтра."
+    )
+    with make_client(tmp_path, api_keys="manager-key:manager:personal") as client:
+        project = client.post(
+            "/v1/projects",
+            headers=headers,
+            json={
+                "name": "Северная 100",
+                "description": "Аренда помещений и договоры с арендаторами",
+            },
+        )
+        first = client.post(
+            "/v1/calls/intake",
+            headers=headers,
+            data={
+                "metadata": json.dumps(
+                    {
+                        "source_id": "fold-call-0001",
+                        "source_device": "samsung-fold",
+                        "language": "ru",
+                    }
+                ),
+                "transcript": transcript,
+            },
+        )
+        duplicate = client.post(
+            "/v1/calls/intake",
+            headers=headers,
+            data={
+                "metadata": '{"source_id":"fold-call-0001"}',
+                "transcript": transcript,
+            },
+        )
+        action_id = first.json()["proposed_actions"][0]["id"]
+        before = client.get(
+            f"/v1/projects/{project.json()['id']}/tasks",
+            headers=headers,
+        )
+        confirmed = client.post(
+            f"/v1/actions/{action_id}/confirm",
+            headers=headers,
+            json={"payload_updates": {}},
+        )
+        executed = client.post(
+            f"/v1/actions/{action_id}/execute",
+            headers=headers,
+        )
+        after = client.get(
+            f"/v1/projects/{project.json()['id']}/tasks",
+            headers=headers,
+        )
+        calls = client.get("/v1/calls", headers=headers)
+
+    assert first.status_code == 201
+    assert first.json()["duplicate"] is False
+    assert first.json()["suggested_project"]["id"] == project.json()["id"]
+    assert first.json()["execution"] == "confirmation_required"
+    assert first.json()["proposed_actions"][0]["status"] == "proposed"
+    assert duplicate.status_code == 200
+    assert duplicate.json()["call"]["id"] == first.json()["call"]["id"]
+    assert duplicate.json()["proposed_actions"][0]["id"] == action_id
+    assert before.json()["tasks"] == []
+    assert confirmed.json()["status"] == "confirmed"
+    assert executed.json()["status"] == "executed"
+    assert after.json()["tasks"][0]["title"] == "Нужно подготовить договор аренды завтра"
+    assert calls.json()["calls"][0]["source_id"] == "fold-call-0001"
 
 
 def test_orchestrator_routes_task_and_builds_checklist(tmp_path):

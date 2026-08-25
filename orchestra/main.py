@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import re
 import secrets
@@ -23,6 +24,7 @@ from sqlalchemy import text
 
 from orchestra import __version__
 from orchestra.agents import build_orchestrator
+from orchestra.call_intake import match_project, proposed_tasks
 from orchestra.capabilities import (
     AnalyticsService,
     AudioService,
@@ -42,6 +44,8 @@ from orchestra.schemas import (
     AgentRequest,
     BitrixCallRequest,
     CallAnalyzeRequest,
+    CallAnalysis,
+    CallIntakeMetadata,
     ChatRequest,
     ContentRequest,
     CRMExtractRequest,
@@ -175,6 +179,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "risk_flags": task.risk_flags,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
+        }
+
+    def call_payload(call) -> dict[str, Any]:
+        return {
+            "id": call.id,
+            "source_id": call.source_id,
+            "source_device": call.source_device,
+            "filename": call.filename,
+            "recorded_at": call.recorded_at,
+            "phone": call.phone,
+            "contact_name": call.contact_name,
+            "transcript": call.transcript,
+            "analysis": call.analysis,
+            "suggested_project_id": call.suggested_project_id,
+            "project_match_confidence": call.project_match_confidence,
+            "project_match_reason": call.project_match_reason,
+            "created_at": call.created_at,
         }
 
     if settings.cors_origin_list:
@@ -501,6 +522,155 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "analysis": calls.analyze(transcript, script).model_dump(),
             "audio_signals": audio.wav_signals(raw, transcript),
         }
+
+    @app.post("/v1/calls/intake", tags=["calls"], status_code=201)
+    async def intake_call(
+        request: Request,
+        response: Response,
+        metadata: Annotated[str, Form()] = "{}",
+        transcript: Annotated[str | None, Form()] = None,
+        file: Annotated[UploadFile | None, File()] = None,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ):
+        try:
+            details = CallIntakeMetadata.model_validate_json(metadata)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"Invalid metadata: {error}") from error
+
+        raw = b""
+        filename = None
+        if file:
+            filename = file.filename or "call.m4a"
+            raw = await file.read(settings.max_audio_bytes + 1)
+            if len(raw) > settings.max_audio_bytes:
+                raise HTTPException(status_code=422, detail="Audio file is too large")
+        normalized_transcript = (transcript or "").strip()
+        if not raw and not normalized_transcript:
+            raise HTTPException(status_code=422, detail="Provide an audio file or transcript")
+
+        content_hash = hashlib.sha256(
+            raw if raw else normalized_transcript.encode("utf-8")
+        ).hexdigest()
+        source_id = (idempotency_key or details.source_id or content_hash).strip()
+        if not 8 <= len(source_id) <= 255:
+            raise HTTPException(
+                status_code=422,
+                detail="Idempotency-Key or metadata.source_id must contain 8-255 characters",
+            )
+
+        principal = request.state.principal
+        existing = await db.get_call_by_source(principal.tenant_id, source_id)
+        if existing:
+            record = existing
+            analysis = CallAnalysis.model_validate(record.analysis)
+            created = False
+        else:
+            if not normalized_transcript:
+                try:
+                    normalized_transcript = await audio.transcribe(
+                        filename or "call.m4a", raw, details.language
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from error
+                except ExternalProviderRequired as error:
+                    raise HTTPException(status_code=503, detail=str(error)) from error
+            analysis = calls.analyze(normalized_transcript, details.sales_script)
+            projects = await db.list_projects(principal.tenant_id)
+            try:
+                project_match = match_project(
+                    projects,
+                    normalized_transcript,
+                    details,
+                    settings.call_project_match_threshold,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            record, created = await db.create_call(
+                principal.tenant_id,
+                {
+                    "source_id": source_id,
+                    "source_device": details.source_device,
+                    "source_path": details.source_path,
+                    "filename": filename,
+                    "content_hash": content_hash,
+                    "recorded_at": details.recorded_at,
+                    "phone": details.phone,
+                    "contact_name": details.contact_name,
+                    "transcript": normalized_transcript,
+                    "analysis": analysis.model_dump(mode="json"),
+                    "suggested_project_id": project_match.project_id,
+                    "project_match_confidence": project_match.confidence,
+                    "project_match_reason": project_match.reason,
+                },
+            )
+
+        drafts = proposed_tasks(analysis, tasks)
+        actions = []
+        for index, draft in enumerate(drafts):
+            task = draft.model_dump(mode="json")
+            task["project_id"] = record.suggested_project_id
+            task["assignee"] = task.pop("recommended_assignee")
+            action = await db.create_action(
+                tenant_id=principal.tenant_id,
+                actor=principal.user_id,
+                tool="orchestra.task.create",
+                payload={
+                    "call_id": record.id,
+                    "source_id": source_id,
+                    "task": task,
+                },
+                requires_confirmation=True,
+                idempotency_key=f"call:{record.id}:task:{index}",
+            )
+            actions.append(action_payload(action))
+
+        if not created:
+            response.status_code = 200
+        project_name = None
+        if record.suggested_project_id:
+            projects = await db.list_projects(principal.tenant_id)
+            project_name = next(
+                (item.name for item in projects if item.id == record.suggested_project_id),
+                None,
+            )
+        return {
+            "accepted": created,
+            "duplicate": not created,
+            "call": call_payload(record),
+            "suggested_project": (
+                {
+                    "id": record.suggested_project_id,
+                    "name": project_name,
+                    "confidence": record.project_match_confidence,
+                    "reason": record.project_match_reason,
+                }
+                if record.suggested_project_id
+                else None
+            ),
+            "proposed_tasks": [item.model_dump(mode="json") for item in drafts],
+            "proposed_actions": actions,
+            "execution": "confirmation_required",
+        }
+
+    @app.get("/v1/calls", tags=["calls"])
+    async def list_ingested_calls(
+        request: Request,
+        project_id: str | None = None,
+        limit: int = 100,
+    ):
+        records = await db.list_calls(
+            request.state.principal.tenant_id,
+            project_id,
+            max(1, limit),
+        )
+        return {"calls": [call_payload(item) for item in records]}
+
+    @app.get("/v1/calls/{call_id}", tags=["calls"])
+    async def get_ingested_call(call_id: str, request: Request):
+        record = await db.get_call(call_id, request.state.principal.tenant_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Call not found")
+        return call_payload(record)
 
     @app.post("/v1/chat/messages", tags=["chat"])
     async def chat(body: ChatRequest, request: Request):
