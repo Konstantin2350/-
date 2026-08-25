@@ -1,0 +1,23 @@
+{
+  "campaigns": [
+    {
+      "code": "gelendzhik-blogger-2708",
+      "name": "Квартира в Геленджике — ролик блогера",
+      "source": "blogger",
+      "launch_date": "2026-08-27",
+      "channel": "whatsapp",
+      "tenant_id": "default",
+      "operator_id": "owner",
+      "response_sla_minutes": 5,
+      "code_phrase": "Геленджик 2708",
+      "prefilled_message": "Здравствуйте! Пишу по квартире в Геленджике из ролика блогера. Код: Геленджик 2708",
+      "qualification_questions": {
+        "goal": "Вы подбираете квартиру для себя, отдыха или инвестиций?",
+        "budget": "Какой бюджет покупки рассматриваете?",
+        "timeline": "Когда планируете принять решение?",
+        "payment": "Покупка за наличные, в ипотеку или нужна консультация?",
+        "viewing_time": "Когда вам удобно посмотреть квартиру?"
+      }
+    }
+  ]
+}

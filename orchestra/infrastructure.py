@@ -180,6 +180,44 @@ class HandoffRecord(Base):
     )
 
 
+class LeadRecord(Base):
+    __tablename__ = "lead_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "campaign_code",
+            "external_id",
+            name="uq_lead_tenant_campaign_external",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    campaign_code: Mapped[str] = mapped_column(String(100), index=True)
+    external_id: Mapped[str] = mapped_column(String(255))
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    channel: Mapped[str] = mapped_column(String(50))
+    name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    answers: Mapped[dict[str, str]] = mapped_column(JSON)
+    history: Mapped[list[dict[str, str]]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(30), index=True)
+    priority: Mapped[str] = mapped_column(String(20), index=True)
+    qualification_score: Mapped[int] = mapped_column(Integer)
+    next_question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    handoff_id: Mapped[str | None] = mapped_column(
+        ForeignKey("handoff_records.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class ProjectRecord(Base):
     __tablename__ = "project_records"
 
@@ -658,6 +696,107 @@ class Database:
             await session.commit()
             await session.refresh(handoff)
             return handoff
+
+    async def upsert_lead(
+        self,
+        tenant_id: str,
+        campaign_code: str,
+        external_id: str,
+        values: dict[str, Any],
+        message: str,
+    ) -> tuple[LeadRecord, bool]:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(LeadRecord).where(
+                    LeadRecord.tenant_id == tenant_id,
+                    LeadRecord.campaign_code == campaign_code,
+                    LeadRecord.external_id == external_id,
+                )
+            )
+            lead = result.scalar_one_or_none()
+            created = lead is None
+            if lead is None:
+                lead = LeadRecord(
+                    id=str(uuid4()),
+                    tenant_id=tenant_id,
+                    campaign_code=campaign_code,
+                    external_id=external_id,
+                    history=[{"role": "client", "content": message}],
+                    **values,
+                )
+                session.add(lead)
+            else:
+                history = list(lead.history)
+                if not history or history[-1] != {"role": "client", "content": message}:
+                    history.append({"role": "client", "content": message})
+                values["history"] = history[-100:]
+                for key, value in values.items():
+                    setattr(lead, key, value)
+                lead.updated_at = datetime.now(UTC)
+            await session.commit()
+            await session.refresh(lead)
+            return lead, created
+
+    async def get_lead(self, lead_id: str, tenant_id: str) -> LeadRecord | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(LeadRecord).where(
+                    LeadRecord.id == lead_id,
+                    LeadRecord.tenant_id == tenant_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def find_lead(
+        self, tenant_id: str, campaign_code: str, external_id: str
+    ) -> LeadRecord | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(LeadRecord).where(
+                    LeadRecord.tenant_id == tenant_id,
+                    LeadRecord.campaign_code == campaign_code,
+                    LeadRecord.external_id == external_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def list_leads(
+        self,
+        tenant_id: str,
+        campaign_code: str | None = None,
+        status: str | None = None,
+    ) -> list[LeadRecord]:
+        async with self.sessions() as session:
+            query = select(LeadRecord).where(LeadRecord.tenant_id == tenant_id)
+            if campaign_code:
+                query = query.where(LeadRecord.campaign_code == campaign_code)
+            if status:
+                query = query.where(LeadRecord.status == status)
+            result = await session.execute(
+                query.order_by(LeadRecord.created_at.desc()).limit(2_000)
+            )
+            return list(result.scalars())
+
+    async def update_lead(
+        self, lead_id: str, tenant_id: str, values: dict[str, Any]
+    ) -> LeadRecord | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(LeadRecord).where(
+                    LeadRecord.id == lead_id,
+                    LeadRecord.tenant_id == tenant_id,
+                )
+            )
+            lead = result.scalar_one_or_none()
+            if not lead:
+                return None
+            for key, value in values.items():
+                if value is not None:
+                    setattr(lead, key, value)
+            lead.updated_at = datetime.now(UTC)
+            await session.commit()
+            await session.refresh(lead)
+            return lead
 
     async def create_project(self, tenant_id: str, name: str, description: str) -> ProjectRecord:
         project = ProjectRecord(

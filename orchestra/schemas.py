@@ -141,6 +141,39 @@ class ChatResponse(BaseModel):
     handoff_id: UUID | None = None
 
 
+class CampaignConfig(BaseModel):
+    code: str = Field(pattern=r"^[a-z0-9-]+$", max_length=100)
+    name: str = Field(min_length=1, max_length=300)
+    source: str = Field(min_length=1, max_length=100)
+    launch_date: date
+    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    tenant_id: str = Field(default="default", max_length=128)
+    operator_id: str = Field(default="owner", max_length=128)
+    response_sla_minutes: int = Field(default=5, ge=1, le=1440)
+    code_phrase: str = Field(min_length=1, max_length=200)
+    prefilled_message: str = Field(min_length=1, max_length=1000)
+    qualification_questions: dict[str, str] = Field(min_length=1, max_length=20)
+
+
+class LeadIntakeRequest(BaseModel):
+    external_id: str = Field(min_length=1, max_length=255)
+    session_id: str | None = Field(default=None, max_length=128)
+    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    message: str = Field(min_length=1, max_length=30_000)
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class LeadUpdateRequest(BaseModel):
+    status: Literal[
+        "new", "qualifying", "qualified", "contacted", "viewing_scheduled", "won", "lost"
+    ] | None = None
+    name: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
 class KnowledgeDocumentResponse(BaseModel):
     id: UUID
     title: str

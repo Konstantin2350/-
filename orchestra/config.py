@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = Field(default=300, ge=10, le=100_000)
     cors_origins: str = ""
     employee_config_path: str = "config/ai_employees.json"
+    campaign_config_path: str = "config/campaigns.json"
+    public_base_url: str = "http://localhost:8787"
+    blogger_contact_phone: str | None = None
 
     @field_validator("database_url", mode="before")
     @classmethod

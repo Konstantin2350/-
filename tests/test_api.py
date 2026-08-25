@@ -568,6 +568,101 @@ def test_operator_handoff_queue_and_session_tenant_isolation(tmp_path):
     assert tenant_b_search.json()["citations"] == []
 
 
+def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    with make_client(
+        tmp_path,
+        blogger_contact_phone="+7 (999) 111-22-33",
+        public_base_url="https://orchestra.example",
+    ) as client:
+        campaign = client.get(f"/v1/campaigns/{campaign_code}")
+        redirect = client.get(f"/r/{campaign_code}", follow_redirects=False)
+        first = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={
+                "external_id": "wa-dialog-1",
+                "channel": "whatsapp",
+                "message": "Подскажите цену квартиры",
+            },
+        )
+        second = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={
+                "external_id": "wa-dialog-1",
+                "channel": "whatsapp",
+                "message": "Я Анна, хочу посмотреть квартиру",
+                "phone": "8 (999) 123-45-67",
+                "answers": {
+                    "goal": "для себя",
+                    "budget": "15 млн",
+                    "timeline": "в течение месяца",
+                    "payment": "наличные",
+                    "viewing_time": "завтра в 15:00",
+                },
+            },
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+        handoffs = client.get("/v1/operator/handoffs")
+        metrics = client.get(f"/v1/campaigns/{campaign_code}/metrics")
+
+    assert campaign.status_code == 200
+    assert campaign.json()["public_link"] == (
+        "https://orchestra.example/r/gelendzhik-blogger-2708"
+    )
+    assert campaign.json()["contact_configured"] is True
+    assert redirect.status_code == 307
+    assert redirect.headers["location"].startswith("https://wa.me/79991112233?text=")
+    assert first.status_code == 200
+    assert first.json()["created"] is True
+    assert first.json()["lead"]["handoff_id"] is None
+    assert first.json()["lead"]["next_question"]
+    assert second.status_code == 200
+    assert second.json()["created"] is False
+    assert second.json()["lead"]["phone"] == "+79991234567"
+    assert second.json()["lead"]["status"] == "qualified"
+    assert second.json()["lead"]["priority"] == "hot"
+    assert second.json()["lead"]["handoff_id"]
+    assert len(leads.json()["leads"]) == 1
+    assert len(handoffs.json()["handoffs"]) == 1
+    assert metrics.json() == {
+        "campaign_code": campaign_code,
+        "clicks": 1,
+        "leads": 1,
+        "with_phone": 1,
+        "handoffs": 1,
+        "statuses": {"qualified": 1},
+        "priorities": {"hot": 1},
+    }
+
+
+def test_campaign_lead_webhook_secret_and_status_update(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    with make_client(tmp_path, webhook_secret="campaign-secret") as client:
+        rejected = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={"external_id": "wa-2", "message": "Хочу посмотреть"},
+        )
+        accepted = client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            headers={"x-webhook-secret": "campaign-secret"},
+            json={
+                "external_id": "wa-2",
+                "message": "Хочу посмотреть",
+                "phone": "+79990000000",
+            },
+        )
+        lead_id = accepted.json()["lead"]["id"]
+        updated = client.patch(
+            f"/v1/leads/{lead_id}",
+            json={"status": "viewing_scheduled", "answers": {"viewing_time": "27 августа"}},
+        )
+
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+    assert updated.status_code == 200
+    assert updated.json()["status"] == "viewing_scheduled"
+
+
 def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):
     headers = {"x-api-key": "operator-key"}
     with make_client(tmp_path, api_keys="operator-key:operator:projects-tenant") as client:
