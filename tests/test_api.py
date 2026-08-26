@@ -585,7 +585,7 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
             json={
                 "external_id": "wa-dialog-1",
                 "channel": "whatsapp",
-                "message": "Подскажите цену квартиры",
+                "message": "Валера. Подскажите цену аренды",
             },
         )
         second = client.post(
@@ -593,14 +593,14 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
             json={
                 "external_id": "wa-dialog-1",
                 "channel": "whatsapp",
-                "message": "Я Анна, хочу посмотреть квартиру",
+                "message": "Я Анна, хочу забронировать квартиру",
                 "phone": "8 (999) 123-45-67",
                 "answers": {
-                    "goal": "для себя",
-                    "budget": "15 млн",
-                    "timeline": "в течение месяца",
-                    "payment": "наличные",
-                    "viewing_time": "завтра в 15:00",
+                    "stay_dates": "3–10 сентября",
+                    "guests": "2 взрослых и 1 ребёнок",
+                    "children_ages": "7 лет",
+                    "pets": "без животных",
+                    "budget": "100 000 рублей",
                 },
             },
         )
@@ -609,6 +609,8 @@ def test_blogger_campaign_redirect_and_lead_flow_without_bitrix(tmp_path):
         metrics = client.get(f"/v1/campaigns/{campaign_code}/metrics")
 
     assert campaign.status_code == 200
+    assert campaign.json()["offer_type"] == "short_term_rental"
+    assert campaign.json()["code_phrase"] == "Валера"
     assert campaign.json()["public_link"] == ("https://orchestra.example/r/gelendzhik-blogger-2708")
     assert campaign.json()["configured_channels"] == ["whatsapp", "telegram"]
     assert campaign.json()["contact_links"]["telegram"] == (
@@ -739,6 +741,79 @@ def test_wazzup_telegram_webhook_creates_lead_replies_and_deduplicates(tmp_path)
         "https://orchestra.example/v1/webhooks/wazzup/"
         "gelendzhik-blogger-2708?token=test-webhook-token"
     )
+
+
+def test_wazzup_instagram_comment_requires_valera_keyword(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+
+    def instagram_payload(message_id: str, text: str, post_id: str = "Dcf4dWLJGAz") -> dict:
+        return {
+            "messages": [
+                {
+                    "messageId": message_id,
+                    "channelId": "instagram-channel-1",
+                    "chatType": "instagram",
+                    "chatId": "instagram-chat-42",
+                    "type": "text",
+                    "status": "inbound",
+                    "isEcho": False,
+                    "text": text,
+                    "contact": {"name": "Ирина", "username": "irina_example"},
+                    "instPost": {"id": post_id},
+                }
+            ]
+        }
+
+    with make_client(
+        tmp_path,
+        wazzup_api_key="test-api-key",
+        wazzup_webhook_token="test-webhook-token",
+        wazzup_auto_reply=True,
+    ) as client:
+        send_message = AsyncMock(
+            return_value={"messageId": "instagram-reply-1", "chatId": "instagram-chat-42"}
+        )
+        client.app.state.wazzup.send_message = send_message
+
+        ignored = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=instagram_payload("instagram-message-ignored", "Очень красивая квартира"),
+        )
+        wrong_post = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=instagram_payload("instagram-wrong-post", "Валера", "another-post"),
+        )
+        accepted = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=instagram_payload("instagram-message-1", "Валера 🔥"),
+        )
+        duplicate = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=instagram_payload("instagram-message-1", "Валера 🔥"),
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+        handoffs = client.get("/v1/operator/handoffs")
+
+    assert ignored.json()["processed"] == [
+        {
+            "message_id": "instagram-message-ignored",
+            "status": "ignored",
+            "reason": "campaign_keyword_missing",
+        }
+    ]
+    assert wrong_post.json()["processed"][0]["reason"] == "campaign_post_mismatch"
+    assert accepted.status_code == 200
+    assert accepted.json()["processed"][0]["status"] == "processed"
+    assert accepted.json()["processed"][0]["handoff_id"]
+    assert duplicate.json()["processed"][0]["status"] == "duplicate"
+    assert len(leads.json()["leads"]) == 1
+    assert leads.json()["leads"][0]["channel"] == "instagram"
+    assert leads.json()["leads"][0]["name"] == "Ирина"
+    assert "На какие даты" in leads.json()["leads"][0]["next_question"]
+    assert len(handoffs.json()["handoffs"]) == 1
+    send_message.assert_awaited_once()
+    assert send_message.await_args.kwargs["chat_type"] == "instagram"
+    assert send_message.await_args.kwargs["ref_message_id"] == "instagram-message-1"
 
 
 def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):

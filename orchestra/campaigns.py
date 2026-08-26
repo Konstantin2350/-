@@ -59,6 +59,9 @@ class LeadQualifier:
         "ипотека одобрена",
         "наличные",
         "в ближайшее время",
+        "хочу забронировать",
+        "готов забронировать",
+        "свободна на даты",
     )
 
     @staticmethod
@@ -106,11 +109,10 @@ class LeadQualifier:
         )
         next_question = campaign.qualification_questions[missing[0]] if missing else None
         if next_question:
-            reply = f"Спасибо! Чтобы помочь по квартире, уточните: {next_question}"
+            reply = f"{campaign.reply_prefix} {next_question}"
         else:
-            reply = (
-                f"Спасибо! Заявка по квартире принята. "
-                f"Человек подключится в течение {campaign.response_sla_minutes} минут."
+            reply = campaign.completion_message.format(
+                response_sla_minutes=campaign.response_sla_minutes
             )
         return {
             "name": name,

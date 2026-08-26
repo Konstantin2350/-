@@ -514,6 +514,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or message.chat_type not in campaign.channels
             ):
                 continue
+            if (
+                message.chat_type == "instagram"
+                and campaign.source_post_id
+                and (message.inst_post or {}).get("id") != campaign.source_post_id
+            ):
+                processed.append(
+                    {
+                        "message_id": message.message_id,
+                        "status": "ignored",
+                        "reason": "campaign_post_mismatch",
+                    }
+                )
+                continue
+            if (
+                message.chat_type == "instagram"
+                and campaign.entry_keywords
+                and not any(
+                    keyword.casefold() in message.text.casefold()
+                    for keyword in campaign.entry_keywords
+                )
+            ):
+                processed.append(
+                    {
+                        "message_id": message.message_id,
+                        "status": "ignored",
+                        "reason": "campaign_keyword_missing",
+                    }
+                )
+                continue
             event_id = f"wazzup:{x_tenant_id}:{message.message_id}"
             if await db.event_exists(event_id, x_tenant_id):
                 processed.append({"message_id": message.message_id, "status": "duplicate"})
@@ -560,6 +589,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         chat_id=message.chat_id,
                         text=result["reply"],
                         crm_message_id=f"orchestra:{message.message_id}",
+                        ref_message_id=(
+                            message.message_id if message.chat_type == "instagram" else None
+                        ),
                     )
                     delivery = "sent"
                     result["provider_message_id"] = sent.get("messageId")
@@ -892,7 +924,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/v1/channels/{channel}/messages", tags=["chat"])
     async def channel_message(channel: str, body: ChatRequest, request: Request):
-        supported = {"web", "bitrix24", "telegram", "whatsapp", "email", "api"}
+        supported = {
+            "web",
+            "bitrix24",
+            "telegram",
+            "whatsapp",
+            "instagram",
+            "email",
+            "api",
+        }
         if channel not in supported:
             raise HTTPException(status_code=422, detail="Unsupported channel")
         principal = request.state.principal

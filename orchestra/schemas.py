@@ -128,7 +128,7 @@ class ChatRequest(BaseModel):
     user_id: str = Field(default="anonymous", max_length=128)
     tenant_id: str = Field(default="default", max_length=128)
     persona: Literal["sales", "support", "onboarding", "auto"] = "auto"
-    channel: Literal["web", "bitrix24", "telegram", "whatsapp", "email", "api"] = "api"
+    channel: Literal["web", "bitrix24", "telegram", "whatsapp", "instagram", "email", "api"] = "api"
 
 
 class ChatResponse(BaseModel):
@@ -145,23 +145,33 @@ class CampaignConfig(BaseModel):
     code: str = Field(pattern=r"^[a-z0-9-]+$", max_length=100)
     name: str = Field(min_length=1, max_length=300)
     source: str = Field(min_length=1, max_length=100)
+    source_url: HttpUrl | None = None
+    source_post_id: str | None = Field(default=None, max_length=255)
+    offer_type: Literal["general", "sale", "short_term_rental"] = "general"
     launch_date: date
-    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
-    channels: list[Literal["whatsapp", "telegram", "phone", "web", "api"]] = Field(
-        default_factory=lambda: ["whatsapp"], min_length=1, max_length=5
+    channel: Literal["whatsapp", "telegram", "instagram", "phone", "web", "api"] = "whatsapp"
+    channels: list[Literal["whatsapp", "telegram", "instagram", "phone", "web", "api"]] = Field(
+        default_factory=lambda: ["whatsapp"], min_length=1, max_length=6
     )
     tenant_id: str = Field(default="default", max_length=128)
     operator_id: str = Field(default="owner", max_length=128)
     response_sla_minutes: int = Field(default=5, ge=1, le=1440)
     code_phrase: str = Field(min_length=1, max_length=200)
+    entry_keywords: list[str] = Field(default_factory=list, max_length=20)
     prefilled_message: str = Field(min_length=1, max_length=1000)
+    reply_prefix: str = Field(
+        default="Спасибо! Чтобы помочь, уточните:", min_length=1, max_length=500
+    )
+    completion_message: str = Field(
+        default="Спасибо! Заявка принята.", min_length=1, max_length=1000
+    )
     qualification_questions: dict[str, str] = Field(min_length=1, max_length=20)
 
 
 class LeadIntakeRequest(BaseModel):
     external_id: str = Field(min_length=1, max_length=255)
     session_id: str | None = Field(default=None, max_length=128)
-    channel: Literal["whatsapp", "telegram", "phone", "web", "api"] = "whatsapp"
+    channel: Literal["whatsapp", "telegram", "instagram", "phone", "web", "api"] = "whatsapp"
     message: str = Field(min_length=1, max_length=30_000)
     name: str | None = Field(default=None, max_length=200)
     phone: str | None = Field(default=None, max_length=30)
@@ -189,13 +199,14 @@ class WazzupMessage(BaseModel):
 
     message_id: str = Field(alias="messageId", min_length=1, max_length=255)
     channel_id: str = Field(alias="channelId", min_length=1, max_length=255)
-    chat_type: Literal["whatsapp", "telegram"] = Field(alias="chatType")
+    chat_type: Literal["whatsapp", "telegram", "instagram"] = Field(alias="chatType")
     chat_id: str = Field(alias="chatId", min_length=1, max_length=255)
     message_type: str = Field(default="text", alias="type", max_length=50)
     status: str = Field(default="inbound", max_length=50)
     text: str | None = Field(default=None, max_length=30_000)
     is_echo: bool = Field(default=False, alias="isEcho")
     contact: WazzupContact = Field(default_factory=WazzupContact)
+    inst_post: dict[str, Any] | None = Field(default=None, alias="instPost")
 
 
 class WazzupWebhook(BaseModel):

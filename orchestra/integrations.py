@@ -97,6 +97,7 @@ class WazzupClient:
         chat_id: str,
         text: str,
         crm_message_id: str,
+        ref_message_id: str | None = None,
     ) -> dict[str, Any]:
         if not self.api_key:
             raise RuntimeError("WAZZUP_API_KEY is not configured")
@@ -111,6 +112,7 @@ class WazzupClient:
                     "text": text,
                     "crmMessageId": crm_message_id,
                     "clearUnanswered": False,
+                    **({"refMessageId": ref_message_id} if ref_message_id else {}),
                 },
             )
             response.raise_for_status()
