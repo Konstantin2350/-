@@ -50,6 +50,8 @@ class ActionEngine:
             return action
         if action.status != "confirmed":
             raise WorkflowConflict("Action requires confirmation before execution")
+        if action.tool == "orchestra.task.create":
+            return await self._execute_local_task(action, tenant_id)
         method = action.payload.get("method")
         params = action.payload.get("params", {})
         if not method:
@@ -82,6 +84,51 @@ class ActionEngine:
             "action.executed",
             action.actor,
             {"action_id": action.id, "tool": action.tool, "method": method},
+            external_id=f"action:{action.id}:executed",
+            tenant_id=tenant_id,
+        )
+        return executed
+
+    async def _execute_local_task(self, action: ActionRecord, tenant_id: str) -> ActionRecord:
+        task_data = action.payload.get("task")
+        if not isinstance(task_data, dict) or not task_data.get("title"):
+            raise WorkflowConflict("Local task action must include task data")
+        values = {
+            "project_id": task_data.get("project_id"),
+            "title": str(task_data["title"])[:500],
+            "description": str(task_data.get("description", ""))[:30_000],
+            "status": "new",
+            "priority": task_data.get("priority", "normal"),
+            "deadline": task_data.get("deadline"),
+            "assignee": task_data.get("assignee"),
+            "progress": 0,
+            "checklist": list(task_data.get("checklist", []))[:100],
+            "risk_flags": list(task_data.get("risk_flags", []))[:100],
+        }
+        await self.db.update_action(action.id, tenant_id, status="executing", error=None)
+        try:
+            task = await self.db.create_task(tenant_id, values)
+        except Exception as error:
+            failed = await self.db.update_action(
+                action.id,
+                tenant_id,
+                status="failed",
+                error=str(error)[:2_000],
+            )
+            assert failed
+            return failed
+        executed = await self.db.update_action(
+            action.id,
+            tenant_id,
+            status="executed",
+            result={"task_id": task.id, "project_id": task.project_id},
+            error=None,
+        )
+        assert executed
+        await self.db.append_event(
+            "action.executed",
+            action.actor,
+            {"action_id": action.id, "tool": action.tool, "task_id": task.id},
             external_id=f"action:{action.id}:executed",
             tenant_id=tenant_id,
         )

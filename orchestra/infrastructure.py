@@ -222,6 +222,36 @@ class TaskRecord(Base):
     )
 
 
+class CallRecord(Base):
+    __tablename__ = "call_records"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source_id", name="uq_call_tenant_source"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_id: Mapped[str] = mapped_column(String(255))
+    source_device: Mapped[str] = mapped_column(String(100))
+    source_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filename: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    contact_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    transcript: Mapped[str] = mapped_column(Text)
+    analysis: Mapped[dict[str, Any]] = mapped_column(JSON)
+    suggested_project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("project_records.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    project_match_confidence: Mapped[float | None] = mapped_column(nullable=True)
+    project_match_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), index=True
+    )
+
+
 class Database:
     def __init__(self, settings: Settings) -> None:
         self.engine = create_async_engine(settings.database_url, pool_pre_ping=True)
@@ -682,6 +712,58 @@ class Database:
                 .limit(500)
             )
             return list(result.scalars())
+
+    async def get_call_by_source(self, tenant_id: str, source_id: str) -> CallRecord | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(CallRecord).where(
+                    CallRecord.tenant_id == tenant_id,
+                    CallRecord.source_id == source_id,
+                )
+            )
+            return result.scalar_one_or_none()
+
+    async def create_call(
+        self, tenant_id: str, values: dict[str, Any]
+    ) -> tuple[CallRecord, bool]:
+        record = CallRecord(id=str(uuid4()), tenant_id=tenant_id, **values)
+        async with self.sessions() as session:
+            session.add(record)
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                result = await session.execute(
+                    select(CallRecord).where(
+                        CallRecord.tenant_id == tenant_id,
+                        CallRecord.source_id == values["source_id"],
+                    )
+                )
+                return result.scalar_one(), False
+            await session.refresh(record)
+            return record, True
+
+    async def list_calls(
+        self, tenant_id: str, project_id: str | None = None, limit: int = 100
+    ) -> list[CallRecord]:
+        async with self.sessions() as session:
+            query = select(CallRecord).where(CallRecord.tenant_id == tenant_id)
+            if project_id:
+                query = query.where(CallRecord.suggested_project_id == project_id)
+            result = await session.execute(
+                query.order_by(CallRecord.created_at.desc()).limit(min(limit, 500))
+            )
+            return list(result.scalars())
+
+    async def get_call(self, call_id: str, tenant_id: str) -> CallRecord | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(CallRecord).where(
+                    CallRecord.id == call_id,
+                    CallRecord.tenant_id == tenant_id,
+                )
+            )
+            return result.scalar_one_or_none()
 
     async def create_task(self, tenant_id: str, values: dict[str, Any]) -> TaskRecord:
         task = TaskRecord(
