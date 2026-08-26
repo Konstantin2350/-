@@ -1,5 +1,10 @@
 # Dependencies
 node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 npm-debug.log*
 yarn-error.log*
 package-lock.json.bak
@@ -17,6 +22,9 @@ test-results/
 
 # Service artifacts (screenshots, output)
 artifacts/
+orchestra.db
+*.db
+*.sqlite3
 *.png
 *.jpg
 *.jpeg

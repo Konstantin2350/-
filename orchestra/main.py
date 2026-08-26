@@ -1,0 +1,1191 @@
+import asyncio
+import hashlib
+import json
+import re
+import secrets
+from contextlib import asynccontextmanager
+from typing import Annotated, Any
+from uuid import uuid4
+
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
+from sqlalchemy import text
+
+from orchestra import __version__
+from orchestra.agents import build_orchestrator
+from orchestra.call_intake import match_project, proposed_tasks
+from orchestra.capabilities import (
+    AnalyticsService,
+    AudioService,
+    ContentService,
+    ExternalProviderRequired,
+    ProcessService,
+    TrainingService,
+)
+from orchestra.config import Settings, get_settings
+from orchestra.employees import EmployeeRegistry
+from orchestra.infrastructure import ConversationMemory, Database
+from orchestra.integrations import MCP_TOOLS, Bitrix24Client
+from orchestra.observability import AGENT_RUNS, metrics_middleware, metrics_response
+from orchestra.schemas import (
+    ActionConfirmRequest,
+    ActionCreateRequest,
+    AgentRequest,
+    BitrixCallRequest,
+    CallAnalysis,
+    CallAnalyzeRequest,
+    CallIntakeMetadata,
+    ChatRequest,
+    ContentRequest,
+    CRMExtractRequest,
+    DealHistoryItem,
+    DealModelTrainRequest,
+    DealPredictRequest,
+    EmployeeInvokeRequest,
+    HandoffClaimRequest,
+    HandoffReplyRequest,
+    KnowledgeQuery,
+    KPIForecastRequest,
+    MCPRequest,
+    PersistTaskRequest,
+    PresentationRequest,
+    ProcessApprovalRequest,
+    ProcessDefinition,
+    ProcessMiningRequest,
+    ProcessNLRequest,
+    ProcessStartRequest,
+    ProjectCreateRequest,
+    ProjectDigestRequest,
+    SpeechRequest,
+    TaskCreateRequest,
+    TaskUpdateRequest,
+    TrainingEvaluateRequest,
+    TrainingGenerateRequest,
+    WebhookEnvelope,
+)
+from orchestra.security import ROLE_LEVELS, Authenticator, RateLimiter
+from orchestra.worker import celery_app
+from orchestra.workflows import ActionEngine, ProcessEngine, WorkflowConflict
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    settings = settings or get_settings()
+    db = Database(settings)
+    memory = ConversationMemory(settings)
+    orchestrator, knowledge, crm, calls, tasks = build_orchestrator(settings, db, memory)
+    bitrix = Bitrix24Client(settings)
+    action_engine = ActionEngine(db, bitrix)
+    process_engine = ProcessEngine(db, orchestrator, settings)
+    authenticator = Authenticator(settings)
+    rate_limiter = RateLimiter(settings)
+    audio = AudioService(settings)
+    processes = ProcessService()
+    content = ContentService(orchestrator.llm)
+    training = TrainingService(knowledge.embeddings)
+    analytics = AnalyticsService()
+    employees = EmployeeRegistry(settings, orchestrator)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if settings.production_issues:
+            raise RuntimeError(
+                "Unsafe production configuration: " + "; ".join(settings.production_issues)
+            )
+        if settings.environment != "production":
+            await db.create_schema()
+        yield
+        await rate_limiter.close()
+        await memory.close()
+        await db.close()
+
+    app = FastAPI(
+        title=settings.app_name,
+        version=__version__,
+        description="Multi-agent business automation platform with Bitrix24 and MCP",
+        lifespan=lifespan,
+        docs_url=None if settings.environment == "production" else "/docs",
+        redoc_url=None if settings.environment == "production" else "/redoc",
+        openapi_url=None if settings.environment == "production" else "/openapi.json",
+    )
+    app.state.settings = settings
+    app.state.db = db
+    app.state.orchestrator = orchestrator
+    app.state.bitrix = bitrix
+    app.state.employees = employees
+
+    def action_payload(action) -> dict[str, Any]:
+        return {
+            "id": action.id,
+            "tool": action.tool,
+            "status": action.status,
+            "payload": action.payload,
+            "requires_confirmation": action.requires_confirmation,
+            "result": action.result,
+            "error": action.error,
+            "created_at": action.created_at,
+            "updated_at": action.updated_at,
+        }
+
+    def process_instance_payload(instance) -> dict[str, Any]:
+        return {
+            "id": instance.id,
+            "process_id": instance.process_id,
+            "status": instance.status,
+            "current_step": instance.current_step,
+            "context": instance.context,
+            "history": instance.history,
+            "created_at": instance.created_at,
+            "updated_at": instance.updated_at,
+        }
+
+    def handoff_payload(handoff) -> dict[str, Any]:
+        return {
+            "id": handoff.id,
+            "session_id": handoff.session_id,
+            "user_id": handoff.user_id,
+            "channel": handoff.channel,
+            "status": handoff.status,
+            "reason": handoff.reason,
+            "assigned_to": handoff.assigned_to,
+            "history": handoff.history,
+            "replies": handoff.replies,
+            "created_at": handoff.created_at,
+            "updated_at": handoff.updated_at,
+        }
+
+    def task_payload(task) -> dict[str, Any]:
+        return {
+            "id": task.id,
+            "project_id": task.project_id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "priority": task.priority,
+            "deadline": task.deadline,
+            "assignee": task.assignee,
+            "progress": task.progress,
+            "checklist": task.checklist,
+            "risk_flags": task.risk_flags,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+
+    def call_payload(call) -> dict[str, Any]:
+        return {
+            "id": call.id,
+            "source_id": call.source_id,
+            "source_device": call.source_device,
+            "filename": call.filename,
+            "recorded_at": call.recorded_at,
+            "phone": call.phone,
+            "contact_name": call.contact_name,
+            "transcript": call.transcript,
+            "analysis": call.analysis,
+            "suggested_project_id": call.suggested_project_id,
+            "project_match_confidence": call.project_match_confidence,
+            "project_match_reason": call.project_match_reason,
+            "created_at": call.created_at,
+        }
+
+    if settings.cors_origin_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origin_list,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    app.middleware("http")(metrics_middleware)
+
+    @app.middleware("http")
+    async def security_and_trace(request: Request, call_next):
+        request_id = request.headers.get("x-request-id", str(uuid4()))
+        public_paths = {"/health", "/ready", "/docs", "/openapi.json", "/redoc"}
+        is_webhook = request.url.path.startswith("/v1/webhooks/")
+        principal = authenticator.from_request(request)
+        if request.url.path not in public_paths and not is_webhook and not principal:
+            return JSONResponse(
+                {"detail": "Authentication required", "request_id": request_id},
+                status_code=401,
+            )
+        if principal:
+            minimum_role = "viewer"
+            if request.method != "GET":
+                minimum_role = "operator"
+            if request.url.path.startswith(
+                (
+                    "/v1/bitrix",
+                    "/v1/processes",
+                    "/v1/jobs",
+                    "/v1/analytics",
+                    "/v1/crm/deal-model",
+                    "/v1/actions",
+                    "/v1/operator",
+                )
+            ):
+                minimum_role = "manager"
+            if request.url.path.startswith("/v1/admin"):
+                minimum_role = "admin"
+            if ROLE_LEVELS[principal.role] < ROLE_LEVELS[minimum_role]:
+                return JSONResponse(
+                    {"detail": f"Role {minimum_role} required", "request_id": request_id},
+                    status_code=403,
+                )
+            try:
+                allowed, remaining = await rate_limiter.allow(
+                    f"{principal.tenant_id}:{principal.user_id}"
+                )
+            except Exception:
+                return JSONResponse(
+                    {
+                        "detail": "Rate limiter unavailable",
+                        "request_id": request_id,
+                    },
+                    status_code=503,
+                )
+            if not allowed:
+                return JSONResponse(
+                    {"detail": "Rate limit exceeded", "request_id": request_id},
+                    status_code=429,
+                    headers={"retry-after": "60"},
+                )
+            request.state.principal = principal
+        else:
+            remaining = settings.rate_limit_per_minute
+        response = await call_next(request)
+        response.headers["x-request-id"] = request_id
+        response.headers["x-ratelimit-remaining"] = str(remaining)
+        response.headers["x-content-type-options"] = "nosniff"
+        response.headers["x-frame-options"] = "DENY"
+        response.headers["referrer-policy"] = "no-referrer"
+        if settings.environment == "production":
+            response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+    @app.get("/health", tags=["system"])
+    async def health() -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "service": settings.app_name,
+            "version": __version__,
+            "llm": "configured" if settings.llm_api_key else "local-fallback",
+        }
+
+    @app.get("/ready", tags=["system"])
+    async def ready() -> dict[str, Any]:
+        if settings.production_issues:
+            raise HTTPException(
+                status_code=503,
+                detail={"configuration": settings.production_issues},
+            )
+        try:
+            async with db.engine.connect() as connection:
+                await connection.execute(text("SELECT 1"))
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Database unavailable") from error
+        try:
+            redis_ready = await memory.ping()
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Redis unavailable") from error
+        celery_ready: bool | None = None
+        if settings.environment == "production":
+            replies = await asyncio.to_thread(lambda: celery_app.control.ping(timeout=1.5))
+            celery_ready = bool(replies)
+            if not celery_ready:
+                raise HTTPException(status_code=503, detail="Celery worker unavailable")
+        return {
+            "status": "ready",
+            "components": {
+                "database": "ready",
+                "redis": (
+                    "not-configured"
+                    if memory.redis is None
+                    else "ready"
+                    if redis_ready
+                    else "unavailable"
+                ),
+                "celery": ("ready" if celery_ready else "not-checked"),
+            },
+        }
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics():
+        return metrics_response()
+
+    @app.post("/v1/orchestrate", tags=["agents"])
+    async def orchestrate(body: AgentRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
+        response = await orchestrator.execute(body)
+        AGENT_RUNS.labels(response.agent, str(response.requires_human).lower()).inc()
+        return response
+
+    @app.get("/v1/employees", tags=["employees"])
+    async def list_employees():
+        return {"employees": employees.list()}
+
+    @app.get("/v1/employees/{employee_id}", tags=["employees"])
+    async def get_employee(employee_id: str):
+        employee = employees.get(employee_id)
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        return employee
+
+    @app.post("/v1/employees/{employee_id}/invoke", tags=["employees"])
+    async def invoke_employee(employee_id: str, body: EmployeeInvokeRequest, request: Request):
+        principal = request.state.principal
+        try:
+            return await employees.invoke(
+                employee_id,
+                body,
+                principal.user_id,
+                principal.tenant_id,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Employee not found") from error
+
+    @app.post("/v1/jobs/agent", tags=["agents"], status_code=202)
+    async def enqueue_agent(body: AgentRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
+        try:
+            job = celery_app.send_task("orchestra.run_agent", args=[body.model_dump(mode="json")])
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Task queue unavailable") from error
+        return {"job_id": job.id, "status": "queued"}
+
+    @app.get("/v1/jobs/{job_id}", tags=["agents"])
+    async def job_status(job_id: str):
+        result = celery_app.AsyncResult(job_id)
+        response: dict[str, Any] = {"job_id": job_id, "status": result.status}
+        if result.successful():
+            response["result"] = result.result
+        elif result.failed():
+            response["error"] = str(result.result)
+        return response
+
+    @app.post("/v1/actions", tags=["actions"], status_code=201)
+    async def create_action(body: ActionCreateRequest, request: Request):
+        principal = request.state.principal
+        action = await db.create_action(
+            tenant_id=principal.tenant_id,
+            actor=principal.user_id,
+            tool=body.tool,
+            payload=body.payload,
+            requires_confirmation=body.requires_confirmation,
+            idempotency_key=body.idempotency_key,
+        )
+        return action_payload(action)
+
+    @app.get("/v1/actions", tags=["actions"])
+    async def list_actions(request: Request, status: str | None = None):
+        records = await db.list_actions(request.state.principal.tenant_id, status)
+        return {"actions": [action_payload(item) for item in records]}
+
+    @app.post("/v1/actions/{action_id}/confirm", tags=["actions"])
+    async def confirm_action(action_id: str, body: ActionConfirmRequest, request: Request):
+        try:
+            action = await action_engine.confirm(
+                action_id,
+                request.state.principal.tenant_id,
+                body.payload_updates,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Action not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return action_payload(action)
+
+    @app.post("/v1/actions/{action_id}/execute", tags=["actions"])
+    async def execute_action(action_id: str, request: Request):
+        try:
+            action = await action_engine.execute(action_id, request.state.principal.tenant_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Action not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return action_payload(action)
+
+    @app.post("/v1/actions/{action_id}/enqueue", tags=["actions"], status_code=202)
+    async def enqueue_action(action_id: str, request: Request):
+        tenant_id = request.state.principal.tenant_id
+        action = await db.get_action(action_id, tenant_id)
+        if not action:
+            raise HTTPException(status_code=404, detail="Action not found")
+        if action.status != "confirmed":
+            raise HTTPException(status_code=409, detail="Confirm action first")
+        try:
+            job = celery_app.send_task("orchestra.execute_action", args=[action_id, tenant_id])
+        except Exception as error:
+            raise HTTPException(status_code=503, detail="Task queue unavailable") from error
+        return {"job_id": job.id, "action_id": action_id, "status": "queued"}
+
+    @app.post("/v1/crm/extract", tags=["crm"])
+    async def crm_extract(body: CRMExtractRequest):
+        return crm.extract(body.text, body.current_fields)
+
+    @app.post("/v1/crm/repeat-sales", tags=["crm"])
+    async def crm_repeat_sales(body: list[DealHistoryItem]):
+        return {"customers": crm.repeat_sales(body)}
+
+    @app.post("/v1/crm/deal-model/train", tags=["crm"])
+    async def train_deal_model(body: DealModelTrainRequest, request: Request):
+        try:
+            parameters, model_metrics = crm.train_deal_model(body.examples)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        model = await db.save_model(
+            "deal_outcome",
+            parameters,
+            model_metrics,
+            request.state.principal.tenant_id,
+        )
+        return {
+            "model_id": model.id,
+            "version": model.version,
+            "metrics": model.metrics,
+        }
+
+    @app.post("/v1/crm/deal-model/predict", tags=["crm"])
+    async def predict_deal(body: DealPredictRequest, request: Request):
+        model = await db.active_model("deal_outcome", request.state.principal.tenant_id)
+        if not model:
+            raise HTTPException(status_code=409, detail="Train a deal model first")
+        try:
+            probability = crm.predict_deal(body, model.parameters)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return {
+            "probability": probability,
+            "model_version": model.version,
+            "model_metrics": model.metrics,
+        }
+
+    @app.post("/v1/calls/analyze", tags=["calls"])
+    async def analyze_call(body: CallAnalyzeRequest):
+        return calls.analyze(body.transcript, body.sales_script)
+
+    @app.post("/v1/calls/transcribe", tags=["calls"])
+    async def transcribe_call(
+        file: Annotated[UploadFile, File()],
+        language: Annotated[str | None, Form()] = None,
+    ):
+        raw = await file.read(settings.max_audio_bytes + 1)
+        try:
+            transcript = await audio.transcribe(file.filename or "call.mp3", raw, language)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ExternalProviderRequired as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return {"transcript": transcript, "language": language or "auto"}
+
+    @app.post("/v1/calls/process-audio", tags=["calls"])
+    async def process_audio_call(
+        file: Annotated[UploadFile, File()],
+        sales_script: Annotated[str, Form()] = "[]",
+        language: Annotated[str | None, Form()] = None,
+    ):
+        raw = await file.read(settings.max_audio_bytes + 1)
+        try:
+            script = json.loads(sales_script)
+            if not isinstance(script, list) or not all(isinstance(item, str) for item in script):
+                raise ValueError("sales_script must be a JSON array of strings")
+            transcript = await audio.transcribe(file.filename or "call.mp3", raw, language)
+        except (ValueError, json.JSONDecodeError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except ExternalProviderRequired as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return {
+            "transcript": transcript,
+            "analysis": calls.analyze(transcript, script).model_dump(),
+            "audio_signals": audio.wav_signals(raw, transcript),
+        }
+
+    @app.post("/v1/calls/intake", tags=["calls"], status_code=201)
+    async def intake_call(
+        request: Request,
+        response: Response,
+        metadata: Annotated[str, Form()] = "{}",
+        transcript: Annotated[str | None, Form()] = None,
+        file: Annotated[UploadFile | None, File()] = None,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
+    ):
+        try:
+            details = CallIntakeMetadata.model_validate_json(metadata)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=f"Invalid metadata: {error}") from error
+
+        raw = b""
+        filename = None
+        if file:
+            filename = file.filename or "call.m4a"
+            raw = await file.read(settings.max_audio_bytes + 1)
+            if len(raw) > settings.max_audio_bytes:
+                raise HTTPException(status_code=422, detail="Audio file is too large")
+        normalized_transcript = (transcript or "").strip()
+        if not raw and not normalized_transcript:
+            raise HTTPException(status_code=422, detail="Provide an audio file or transcript")
+
+        content_hash = hashlib.sha256(
+            raw if raw else normalized_transcript.encode("utf-8")
+        ).hexdigest()
+        source_id = (idempotency_key or details.source_id or content_hash).strip()
+        if not 8 <= len(source_id) <= 255:
+            raise HTTPException(
+                status_code=422,
+                detail="Idempotency-Key or metadata.source_id must contain 8-255 characters",
+            )
+
+        principal = request.state.principal
+        existing = await db.get_call_by_source(principal.tenant_id, source_id)
+        if existing:
+            record = existing
+            analysis = CallAnalysis.model_validate(record.analysis)
+            created = False
+        else:
+            if not normalized_transcript:
+                try:
+                    normalized_transcript = await audio.transcribe(
+                        filename or "call.m4a", raw, details.language
+                    )
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=str(error)) from error
+                except ExternalProviderRequired as error:
+                    raise HTTPException(status_code=503, detail=str(error)) from error
+            analysis = calls.analyze(normalized_transcript, details.sales_script)
+            projects = await db.list_projects(principal.tenant_id)
+            try:
+                project_match = match_project(
+                    projects,
+                    normalized_transcript,
+                    details,
+                    settings.call_project_match_threshold,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from error
+            record, created = await db.create_call(
+                principal.tenant_id,
+                {
+                    "source_id": source_id,
+                    "source_device": details.source_device,
+                    "source_path": details.source_path,
+                    "filename": filename,
+                    "content_hash": content_hash,
+                    "recorded_at": details.recorded_at,
+                    "phone": details.phone,
+                    "contact_name": details.contact_name,
+                    "transcript": normalized_transcript,
+                    "analysis": analysis.model_dump(mode="json"),
+                    "suggested_project_id": project_match.project_id,
+                    "project_match_confidence": project_match.confidence,
+                    "project_match_reason": project_match.reason,
+                },
+            )
+
+        drafts = proposed_tasks(analysis, tasks)
+        actions = []
+        for index, draft in enumerate(drafts):
+            task = draft.model_dump(mode="json")
+            task["project_id"] = record.suggested_project_id
+            task["assignee"] = task.pop("recommended_assignee")
+            action = await db.create_action(
+                tenant_id=principal.tenant_id,
+                actor=principal.user_id,
+                tool="orchestra.task.create",
+                payload={
+                    "call_id": record.id,
+                    "source_id": source_id,
+                    "task": task,
+                },
+                requires_confirmation=True,
+                idempotency_key=f"call:{record.id}:task:{index}",
+            )
+            actions.append(action_payload(action))
+
+        if not created:
+            response.status_code = 200
+        project_name = None
+        if record.suggested_project_id:
+            projects = await db.list_projects(principal.tenant_id)
+            project_name = next(
+                (item.name for item in projects if item.id == record.suggested_project_id),
+                None,
+            )
+        return {
+            "accepted": created,
+            "duplicate": not created,
+            "call": call_payload(record),
+            "suggested_project": (
+                {
+                    "id": record.suggested_project_id,
+                    "name": project_name,
+                    "confidence": record.project_match_confidence,
+                    "reason": record.project_match_reason,
+                }
+                if record.suggested_project_id
+                else None
+            ),
+            "proposed_tasks": [item.model_dump(mode="json") for item in drafts],
+            "proposed_actions": actions,
+            "execution": "confirmation_required",
+        }
+
+    @app.get("/v1/calls", tags=["calls"])
+    async def list_ingested_calls(
+        request: Request,
+        project_id: str | None = None,
+        limit: int = 100,
+    ):
+        records = await db.list_calls(
+            request.state.principal.tenant_id,
+            project_id,
+            max(1, limit),
+        )
+        return {"calls": [call_payload(item) for item in records]}
+
+    @app.get("/v1/calls/{call_id}", tags=["calls"])
+    async def get_ingested_call(call_id: str, request: Request):
+        record = await db.get_call(call_id, request.state.principal.tenant_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="Call not found")
+        return call_payload(record)
+
+    @app.post("/v1/chat/messages", tags=["chat"])
+    async def chat(body: ChatRequest, request: Request):
+        principal = request.state.principal
+        body = body.model_copy(
+            update={
+                "user_id": principal.user_id,
+                "tenant_id": principal.tenant_id,
+            }
+        )
+        return await orchestrator.chat(body)
+
+    @app.post("/v1/channels/{channel}/messages", tags=["chat"])
+    async def channel_message(channel: str, body: ChatRequest, request: Request):
+        supported = {"web", "bitrix24", "telegram", "whatsapp", "email", "api"}
+        if channel not in supported:
+            raise HTTPException(status_code=422, detail="Unsupported channel")
+        principal = request.state.principal
+        return await orchestrator.chat(
+            body.model_copy(
+                update={
+                    "channel": channel,
+                    "user_id": principal.user_id,
+                    "tenant_id": principal.tenant_id,
+                }
+            )
+        )
+
+    @app.websocket("/v1/chat/ws/{session_id}")
+    async def chat_socket(websocket: WebSocket, session_id: str):
+        supplied_key = websocket.query_params.get("api_key", "")
+        authorization = websocket.headers.get("authorization", "")
+        principal = authenticator.authenticate(authorization, supplied_key)
+        if not principal or not principal.can("operator"):
+            await websocket.close(code=1008)
+            return
+        await websocket.accept()
+        try:
+            while True:
+                allowed, _ = await rate_limiter.allow(f"{principal.tenant_id}:{principal.user_id}")
+                if not allowed:
+                    await websocket.send_json({"error": "Rate limit exceeded"})
+                    await websocket.close(code=1013)
+                    return
+                payload = await websocket.receive_json()
+                response = await orchestrator.chat(
+                    ChatRequest(
+                        session_id=session_id,
+                        message=payload.get("message", ""),
+                        user_id=principal.user_id,
+                        tenant_id=principal.tenant_id,
+                        persona=payload.get("persona", "auto"),
+                    )
+                )
+                await websocket.send_json(response.model_dump(mode="json"))
+        except WebSocketDisconnect:
+            return
+
+    @app.get("/v1/operator/handoffs", tags=["operators"])
+    async def list_operator_handoffs(request: Request, status: str | None = "queued"):
+        records = await db.list_handoffs(request.state.principal.tenant_id, status)
+        return {"handoffs": [handoff_payload(item) for item in records]}
+
+    @app.post("/v1/operator/handoffs/{handoff_id}/claim", tags=["operators"])
+    async def claim_handoff(handoff_id: str, body: HandoffClaimRequest, request: Request):
+        principal = request.state.principal
+        records = await db.list_handoffs(principal.tenant_id)
+        current = next((item for item in records if item.id == handoff_id), None)
+        if not current:
+            raise HTTPException(status_code=404, detail="Handoff not found")
+        if current.status not in {"queued", "claimed"}:
+            raise HTTPException(status_code=409, detail="Handoff is closed")
+        updated = await db.update_handoff(
+            handoff_id,
+            principal.tenant_id,
+            status="claimed",
+            assigned_to=body.operator_id or principal.user_id,
+        )
+        assert updated
+        return handoff_payload(updated)
+
+    @app.post("/v1/operator/handoffs/{handoff_id}/reply", tags=["operators"])
+    async def reply_handoff(handoff_id: str, body: HandoffReplyRequest, request: Request):
+        principal = request.state.principal
+        records = await db.list_handoffs(principal.tenant_id)
+        current = next((item for item in records if item.id == handoff_id), None)
+        if not current:
+            raise HTTPException(status_code=404, detail="Handoff not found")
+        if current.status != "claimed":
+            raise HTTPException(status_code=409, detail="Claim handoff first")
+        replies = list(current.replies)
+        replies.append(
+            {
+                "operator_id": principal.user_id,
+                "message": body.message,
+            }
+        )
+        updated = await db.update_handoff(
+            handoff_id,
+            principal.tenant_id,
+            replies=replies,
+            status="closed" if body.close else "claimed",
+        )
+        assert updated
+        await db.append_event(
+            "handoff.operator_reply",
+            principal.user_id,
+            {
+                "handoff_id": handoff_id,
+                "channel": current.channel,
+                "closed": body.close,
+            },
+            tenant_id=principal.tenant_id,
+        )
+        return {
+            **handoff_payload(updated),
+            "delivery": "recorded",
+        }
+
+    @app.post("/v1/knowledge/documents", tags=["knowledge"])
+    async def upload_document(
+        request: Request,
+        file: Annotated[UploadFile, File()],
+        title: Annotated[str | None, Form()] = None,
+    ):
+        content = await file.read(settings.max_upload_bytes + 1)
+        try:
+            return await knowledge.ingest(
+                file.filename or "document.txt",
+                content,
+                title,
+                request.state.principal.tenant_id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.post("/v1/knowledge/query", tags=["knowledge"])
+    async def query_knowledge(body: KnowledgeQuery, request: Request):
+        return await knowledge.answer(
+            body.question,
+            body.limit,
+            request.state.principal.tenant_id,
+        )
+
+    @app.post("/v1/tasks/from-text", tags=["tasks"])
+    async def task_from_text(body: TaskCreateRequest):
+        return tasks.create(body.text, body.available_assignees)
+
+    @app.post("/v1/projects", tags=["tasks"], status_code=201)
+    async def create_project(body: ProjectCreateRequest, request: Request):
+        project = await db.create_project(
+            request.state.principal.tenant_id, body.name, body.description
+        )
+        return {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status,
+            "created_at": project.created_at,
+        }
+
+    @app.get("/v1/projects", tags=["tasks"])
+    async def list_projects(request: Request):
+        records = await db.list_projects(request.state.principal.tenant_id)
+        return {
+            "projects": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "description": item.description,
+                    "status": item.status,
+                    "created_at": item.created_at,
+                }
+                for item in records
+            ]
+        }
+
+    @app.post("/v1/tasks", tags=["tasks"], status_code=201)
+    async def persist_task(body: PersistTaskRequest, request: Request):
+        values = body.model_dump(mode="json")
+        values["project_id"] = str(body.project_id) if body.project_id else None
+        values["status"] = "new"
+        values["progress"] = 0
+        try:
+            task = await db.create_task(request.state.principal.tenant_id, values)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        return task_payload(task)
+
+    @app.get("/v1/projects/{project_id}/tasks", tags=["tasks"])
+    async def list_project_tasks(project_id: str, request: Request):
+        records = await db.list_tasks(request.state.principal.tenant_id, project_id)
+        return {"tasks": [task_payload(item) for item in records]}
+
+    @app.patch("/v1/tasks/{task_id}", tags=["tasks"])
+    async def update_task(task_id: str, body: TaskUpdateRequest, request: Request):
+        values = body.model_dump(mode="json", exclude_unset=True)
+        task = await db.update_task(task_id, request.state.principal.tenant_id, values)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task_payload(task)
+
+    @app.post("/v1/tasks/{task_id}/sync-bitrix", tags=["tasks"])
+    async def sync_task_to_bitrix(task_id: str, request: Request):
+        principal = request.state.principal
+        records = await db.list_tasks(principal.tenant_id)
+        task = next((item for item in records if item.id == task_id), None)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        action = await db.create_action(
+            tenant_id=principal.tenant_id,
+            actor=principal.user_id,
+            tool="bitrix.call",
+            payload={
+                "method": "tasks.task.add",
+                "params": {
+                    "fields": {
+                        "TITLE": task.title,
+                        "DESCRIPTION": task.description,
+                        "DEADLINE": task.deadline,
+                        "RESPONSIBLE_ID": task.assignee,
+                    }
+                },
+            },
+            requires_confirmation=True,
+            idempotency_key=f"task:{task.id}:bitrix-sync",
+        )
+        return action_payload(action)
+
+    @app.post("/v1/processes/compile", tags=["automation"])
+    async def compile_process(body: ProcessDefinition):
+        invalid = processes.validate(body.steps)
+        if invalid:
+            raise HTTPException(
+                status_code=422, detail=f"Unsupported step types at indexes: {invalid}"
+            )
+        return {
+            "dsl_version": "1.0",
+            "process": body.model_dump(),
+            "validation": {"valid": True, "steps": len(body.steps)},
+        }
+
+    @app.post("/v1/processes/from-text", tags=["automation"])
+    async def process_from_text(body: ProcessNLRequest, request: Request):
+        compiled = processes.compile_nl(body)
+        record = await db.save_process(request.state.principal.tenant_id, compiled["process"])
+        return {**compiled, "process_id": record.id}
+
+    @app.post("/v1/processes", tags=["automation"], status_code=201)
+    async def save_process(body: ProcessDefinition, request: Request):
+        invalid = processes.validate(body.steps)
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unsupported step types at indexes: {invalid}",
+            )
+        record = await db.save_process(request.state.principal.tenant_id, body.model_dump())
+        return {
+            "id": record.id,
+            "name": record.name,
+            "trigger": record.trigger,
+            "definition": record.definition,
+            "active": record.active,
+        }
+
+    @app.post("/v1/processes/instances", tags=["automation"], status_code=201)
+    async def start_process(body: ProcessStartRequest, request: Request):
+        principal = request.state.principal
+        try:
+            instance = await process_engine.start(
+                str(body.process_id),
+                principal.tenant_id,
+                principal.user_id,
+                body.context,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if instance.status == "waiting":
+            process = await db.get_process(str(body.process_id), principal.tenant_id)
+            step = process.definition["steps"][instance.current_step] if process else {}
+            seconds = max(1, min(int(step.get("seconds", 60)), 86_400))
+            celery_app.send_task(
+                "orchestra.resume_process_wait",
+                args=[instance.id, principal.tenant_id],
+                countdown=seconds,
+            )
+        return process_instance_payload(instance)
+
+    @app.get("/v1/processes/instances/{instance_id}", tags=["automation"])
+    async def get_process_instance(instance_id: str, request: Request):
+        instance = await db.get_process_instance(instance_id, request.state.principal.tenant_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Process instance not found")
+        return process_instance_payload(instance)
+
+    @app.post("/v1/processes/instances/{instance_id}/approve", tags=["automation"])
+    async def approve_process(instance_id: str, body: ProcessApprovalRequest, request: Request):
+        try:
+            instance = await process_engine.approve(
+                instance_id,
+                request.state.principal.tenant_id,
+                body.approved,
+                body.comment,
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process instance not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return process_instance_payload(instance)
+
+    @app.post("/v1/processes/instances/{instance_id}/resume", tags=["automation"])
+    async def resume_process(instance_id: str, request: Request):
+        try:
+            instance = await process_engine.resume_after_action(
+                instance_id, request.state.principal.tenant_id
+            )
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Process instance not found") from error
+        except WorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        return process_instance_payload(instance)
+
+    @app.post("/v1/content/generate", tags=["content"])
+    async def generate_content(body: ContentRequest):
+        return await content.generate(body)
+
+    @app.post("/v1/content/presentation", tags=["content"])
+    async def generate_presentation(body: PresentationRequest):
+        file_content = content.presentation(body.title, body.content, body.slides)
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]+", "-", body.title).strip("-") or "deck"
+        return Response(
+            file_content,
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            headers={"content-disposition": f'attachment; filename="{safe_name}.pptx"'},
+        )
+
+    @app.post("/v1/training/tests", tags=["training"])
+    async def generate_training_test(body: TrainingGenerateRequest):
+        return {"questions": training.generate(body.source, body.count)}
+
+    @app.post("/v1/training/evaluate", tags=["training"])
+    async def evaluate_training_answer(body: TrainingEvaluateRequest):
+        return await training.evaluate(body)
+
+    @app.post("/v1/analytics/process-mining", tags=["analytics"])
+    async def process_mining(body: ProcessMiningRequest):
+        return analytics.process_mining(body.events)
+
+    @app.post("/v1/analytics/kpi-forecast", tags=["analytics"])
+    async def kpi_forecast(body: KPIForecastRequest):
+        return analytics.forecast(body)
+
+    @app.post("/v1/projects/digest", tags=["tasks"])
+    async def project_digest(body: ProjectDigestRequest):
+        return analytics.project_digest(body)
+
+    @app.post("/v1/voice/synthesize", tags=["voice"])
+    async def synthesize_speech(body: SpeechRequest):
+        try:
+            audio_content = await audio.synthesize(body.text, body.voice, body.format)
+        except ExternalProviderRequired as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return Response(
+            audio_content,
+            media_type=f"audio/{body.format}",
+            headers={"content-disposition": f'attachment; filename="speech.{body.format}"'},
+        )
+
+    @app.post("/v1/bitrix/call", tags=["integrations"])
+    async def bitrix_call(body: BitrixCallRequest, request: Request):
+        principal = request.state.principal
+        try:
+            result = await bitrix.call(body.method, body.params)
+        except (ValueError, RuntimeError) as error:
+            await db.append_event(
+                "bitrix.call.failed",
+                principal.user_id,
+                {"method": body.method, "error": str(error)[:2_000]},
+                tenant_id=principal.tenant_id,
+            )
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        await db.append_event(
+            "bitrix.call.completed",
+            principal.user_id,
+            {"method": body.method},
+            tenant_id=principal.tenant_id,
+        )
+        return result
+
+    @app.post("/v1/bitrix/batch", tags=["integrations"])
+    async def bitrix_batch(body: list[BitrixCallRequest], request: Request):
+        principal = request.state.principal
+        try:
+            result = await bitrix.batch([(item.method, item.params) for item in body])
+        except (ValueError, RuntimeError) as error:
+            await db.append_event(
+                "bitrix.batch.failed",
+                principal.user_id,
+                {
+                    "methods": [item.method for item in body],
+                    "error": str(error)[:2_000],
+                },
+                tenant_id=principal.tenant_id,
+            )
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        await db.append_event(
+            "bitrix.batch.completed",
+            principal.user_id,
+            {"methods": [item.method for item in body]},
+            tenant_id=principal.tenant_id,
+        )
+        return result
+
+    @app.post("/v1/webhooks/bitrix24", tags=["integrations"])
+    async def bitrix_webhook(
+        body: WebhookEnvelope,
+        x_webhook_secret: Annotated[str | None, Header()] = None,
+        x_tenant_id: Annotated[str, Header()] = "default",
+    ):
+        expected_secret = settings.webhook_secret_map.get(x_tenant_id)
+        if expected_secret and not secrets.compare_digest(x_webhook_secret or "", expected_secret):
+            raise HTTPException(status_code=401, detail="Invalid webhook secret")
+        if settings.webhook_secret_map and not expected_secret:
+            raise HTTPException(status_code=401, detail="Unknown webhook tenant")
+        if settings.environment == "production" and not body.event_id:
+            raise HTTPException(status_code=422, detail="event_id is required")
+        inserted = await db.append_event(
+            f"bitrix.{body.event}",
+            "bitrix24",
+            body.model_dump(mode="json"),
+            external_id=(f"bitrix:{x_tenant_id}:{body.event_id}" if body.event_id else None),
+            tenant_id=x_tenant_id,
+        )
+        instances = []
+        if inserted:
+            for process in await db.processes_for_trigger(body.event, x_tenant_id):
+                instance = await process_engine.start(
+                    process.id,
+                    x_tenant_id,
+                    "bitrix24",
+                    {"event": body.model_dump(mode="json")},
+                )
+                instances.append(instance.id)
+        return {
+            "accepted": inserted,
+            "duplicate": not inserted,
+            "event_id": body.event_id,
+            "process_instances": instances,
+        }
+
+    @app.post("/mcp", tags=["mcp"])
+    async def mcp(body: MCPRequest, request: Request):
+        principal = request.state.principal
+        if body.method == "initialize":
+            result: Any = {
+                "protocolVersion": "2025-06-18",
+                "serverInfo": {"name": "ai-orchestra", "version": __version__},
+                "capabilities": {"tools": {}},
+            }
+        elif body.method == "tools/list":
+            result = {"tools": MCP_TOOLS}
+        elif body.method == "tools/call":
+            tool_name = body.params.get("name")
+            arguments = body.params.get("arguments", {})
+            if tool_name == "orchestra_agent":
+                agent_request = AgentRequest(**arguments).model_copy(
+                    update={
+                        "user_id": principal.user_id,
+                        "tenant_id": principal.tenant_id,
+                    }
+                )
+                response = await orchestrator.execute(agent_request)
+                result = {"content": [{"type": "text", "text": response.model_dump_json()}]}
+            elif tool_name == "knowledge_search":
+                answer = await knowledge.answer(
+                    arguments["question"],
+                    arguments.get("limit", 5),
+                    principal.tenant_id,
+                )
+                result = {"content": [{"type": "text", "text": answer.model_dump_json()}]}
+            elif tool_name == "crm_extract":
+                extraction = crm.extract(arguments["text"], arguments.get("current_fields", {}))
+                result = {"content": [{"type": "text", "text": extraction.model_dump_json()}]}
+            elif tool_name == "call_analyze":
+                analysis = calls.analyze(arguments["transcript"], arguments.get("sales_script", []))
+                result = {"content": [{"type": "text", "text": analysis.model_dump_json()}]}
+            elif tool_name == "process_from_text":
+                compiled = processes.compile_nl(ProcessNLRequest(**arguments))
+                result = {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(compiled, ensure_ascii=False),
+                        }
+                    ]
+                }
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": body.id,
+                    "error": {"code": -32602, "message": "Unknown tool"},
+                }
+        else:
+            return {
+                "jsonrpc": "2.0",
+                "id": body.id,
+                "error": {"code": -32601, "message": "Method not found"},
+            }
+        return {"jsonrpc": "2.0", "id": body.id, "result": result}
+
+    return app
+
+
+app = create_app()

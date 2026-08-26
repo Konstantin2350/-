@@ -1,0 +1,11 @@
+{
+  "watch_dir": "%USERPROFILE%\\Documents\\SamsungCalls",
+  "api_url": "http://localhost:8787",
+  "api_key": "",
+  "state_file": "%USERPROFILE%\\Documents\\SamsungCalls\\.call-watcher-state.json",
+  "whisper_model": "small",
+  "language": "ru",
+  "poll_seconds": 20,
+  "stable_seconds": 10,
+  "process_existing": false
+}

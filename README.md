@@ -1,74 +1,191 @@
-# Авто скрин для perplexity
+# ИИ‑Оркестр
 
-Node.js-сервис, который делает скриншоты страниц через Playwright и анализирует их через Perplexity API.
+Multi-agent платформа автоматизации бизнеса: единая точка входа маршрутизирует
+запрос к агентам CRM, звонков, чата, базы знаний, задач и контента. Интеграция с
+Bitrix24 выполняет разрешённые REST-методы и массовые операции, MCP подключает
+Оркестр к внешним AI-системам.
 
-## Стек
+Полное соответствие требованиям и честные эксплуатационные границы описаны в
+`docs/CAPABILITIES.md`.
 
-- Node.js >= 18
-- Express (HTTP API)
-- Playwright (chromium, скриншоты)
-- Perplexity API (модель `sonar`)
+## ИИ‑сотрудники
 
-## Настройка
+Навыки назначаются декларативно в `config/ai_employees.json`. В комплект входят
+координатор, продажи, тренер звонков, поддержка, база знаний, проекты, контент и
+роль **Елена — Финансы**. Елена анализирует суммы, оплаты, бюджет и риски, но
+никогда не проводит платёж без подтверждения человека.
 
-1. Скопируйте файл окружения и впишите свои значения:
+```bash
+# Каталог сотрудников и навыков
+curl http://localhost:8787/v1/employees -H 'x-api-key: ...'
+
+# Поручение конкретному сотруднику
+curl -X POST http://localhost:8787/v1/employees/elena_finance/invoke \
+  -H 'x-api-key: ...' -H 'Content-Type: application/json' \
+  -d '{"message":"Нужно оплатить счёт поставщика на 120 000 руб."}'
+```
+
+Через `POST /v1/employees/director/invoke` можно обратиться к директору:
+Оркестр сам выберет профильного сотрудника по смыслу задачи.
+
+## Что уже работает
+
+- CRM: извлечение имени, телефона, email, суммы и продукта; безопасные предложения
+  изменений полей; оценка вероятности сделки; RFM-поиск повторных продаж.
+- Звонки: Whisper/OpenAI-compatible STT, базовые WAV-сигналы темпа/энергии,
+  резюме, тональность, проверка скрипта, рекомендации, следующие действия,
+  фильтрация нерелевантных обращений и подготовка CRM-полей. Бесплатный
+  Windows-мост принимает записи Samsung, распознаёт их локальным Whisper,
+  определяет проект и предлагает подтверждаемые задачи без Bitrix24.
+- Чат: Redis-память с локальным резервом, роли sales/support/onboarding,
+  поиск по базе знаний и передача оператору с историей; HTTP и WebSocket.
+- RAG: PDF/DOCX/TXT/MD, защита форматов, дедупликация, версионность, chunking,
+  OpenAI или локальные embeddings, pgvector HNSW, гибридный reranking и ссылки.
+- Задачи: разбор естественного языка, дедлайн, приоритет, чек-лист,
+  рекомендация исполнителя по компетенциям/нагрузке, хранимые проекты/задачи,
+  статусы, риски и подтверждаемая синхронизация с Bitrix24.
+- Автоматизация: проверяемый BPMN-like JSON DSL, Bitrix webhooks, event log,
+  конструктор процессов из русского текста, runtime экземпляров/approvals/waits,
+  подтверждаемые и идемпотентные Bitrix actions, Celery, batch API и MCP tools.
+- Контент и развитие: письма/META/описания, резюме встреч, PPTX-презентации,
+  генерация тестов, семантическая проверка ответов и адаптивная сложность.
+- Аналитика: дайджест проектов, process mining, узкие места и прогноз KPI.
+- Безопасность и эксплуатация: API keys/JWT, роли viewer/operator/manager/admin,
+  tenant/session isolation, rate limit, идемпотентные webhooks, Prometheus,
+  миграции Alembic, точный allowlist Bitrix24, security headers и request ID.
+- Операторы: сохраняемая очередь handoff, claim, история диалога, ответы и
+  закрытие обращения.
+
+Внешний LLM необязателен для текста, RAG и аналитики: без ключа работает локальный
+предсказуемый режим. Расшифровка реального аудио и синтез речи требуют
+`STT_API_KEY`/`LLM_API_KEY`, потому что модель не поставляется внутрь контейнера.
+
+## Быстрый запуск
+
+### Docker (рекомендуется)
 
 ```bash
 cp .env.example .env
+docker compose up --build
+curl http://localhost:8787/health
 ```
 
-| Переменная | Описание | По умолчанию |
-| --- | --- | --- |
-| `PERPLEXITY_API_KEY` | Ключ Perplexity API | — |
-| `PERPLEXITY_URL` | URL endpoint | `https://api.perplexity.ai/chat/completions` |
-| `PERPLEXITY_MODEL` | Модель | `sonar` |
-| `MIN_CONFIDENCE` | Порог уверенности | `0.78` |
-| `PLAYWRIGHT_PROFILE_DIR` | Каталог профиля Playwright | `./pw-profile` |
-| `ARTIFACT_DIR` | Каталог для скриншотов | `./artifacts` |
-| `PORT` | Порт сервиса | `8787` |
+Compose запускает API, Celery worker, PostgreSQL и Redis. Документация OpenAPI:
+`http://localhost:8787/docs`.
 
-## Запуск локально
+### Локально без Docker
 
 ```bash
-npm install
-npx playwright install chromium
-npm start
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+cp .env.example .env
+.venv/bin/uvicorn orchestra.main:app --host 0.0.0.0 --port 8787
 ```
 
-Сервис будет доступен на `http://localhost:8787`.
+По умолчанию используется SQLite и память процесса, поэтому PostgreSQL и Redis
+не нужны для первого запуска.
 
-## Запуск в Docker
+## Основные запросы
 
 ```bash
-docker build -t auto-screen .
-docker run -p 8787:8787 --env-file .env auto-screen
+# Автоматическая маршрутизация
+curl -X POST http://localhost:8787/v1/orchestrate \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Создай срочную задачу позвонить клиенту завтра"}'
+
+# Анализ разговора
+curl -X POST http://localhost:8787/v1/calls/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"transcript":"Здравствуйте! Меня зовут Анна. Нужен тариф Бизнес. Отправьте счет завтра.","sales_script":["поздороваться","уточнить потребность","договориться о следующем шаге"]}'
+
+# Загрузка базы знаний
+curl -X POST http://localhost:8787/v1/knowledge/documents \
+  -F 'file=@regulations.pdf' -F 'title=Регламент продаж'
+
+curl -X POST http://localhost:8787/v1/knowledge/query \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"Как согласовать скидку?"}'
 ```
 
-## API
+Если задан `API_KEY`, добавляйте заголовок `x-api-key`. Для Bitrix webhook
+используется отдельный `x-webhook-secret`.
 
-### `GET /health`
+Остальные готовые API видны в `/docs`:
 
-Проверка состояния сервиса.
+- `/v1/calls/transcribe`, `/v1/calls/process-audio`, `/v1/voice/synthesize`
+- `/v1/calls/intake`, `/v1/calls` — автоматический приём записей и история
+- `/v1/processes/from-text`, `/v1/content/generate`,
+  `/v1/content/presentation`
+- `/v1/actions`, `/v1/actions/{id}/confirm`, `/execute`, `/enqueue`
+- `/v1/processes/instances`, `/approve`, `/resume`
+- `/v1/operator/handoffs`, `/claim`, `/reply`
+- `/v1/training/tests`, `/v1/training/evaluate`
+- `/v1/analytics/process-mining`, `/v1/analytics/kpi-forecast`,
+  `/v1/projects/digest`
+- `/v1/channels/{channel}/messages`, `/metrics`, `/mcp`
 
-### `POST /capture`
+## Права доступа
 
-Делает скриншот страницы и (опционально) анализирует её через Perplexity.
+`API_KEYS` принимает строку вида
+`read-key:viewer:company-a,bot-key:operator:company-a`. Третья часть — организация;
+данные, память диалогов, модели, actions и процессы изолируются по ней.
+
+- `viewer` читает статусы, результаты и метрики.
+- `operator` общается с агентами и обрабатывает клиентские запросы.
+- `manager` запускает процессы, аналитику, очередь и действия Bitrix24.
+- `admin` предназначен для административных операций.
+
+Вместо ключей поддерживается JWT HS256 с `sub`, `role`, `tenant_id`, `iat`,
+`exp`, `iss`. Для webhook нескольких организаций задайте
+`WEBHOOK_SECRETS=company-a=secret-a,company-b=secret-b` и передавайте
+`x-tenant-id`.
+
+## Производственная конфигурация
+
+Обязательные настройки:
+
+- `DATABASE_URL=postgresql+asyncpg://...`
+- `REDIS_URL=redis://.../0`
+- `CELERY_BROKER_URL` и `CELERY_RESULT_BACKEND`
+- `API_KEY` и `WEBHOOK_SECRET`
+- `BITRIX_WEBHOOK_URL` для действий в Bitrix24
+- `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` для генеративных ответов
+
+Для Railway/Render используйте `Dockerfile` и readiness check `/ready`, который
+проверяет PostgreSQL, Redis и Celery worker. API масштабируется горизонтально; состояние диалогов хранится в
+Redis, документы и журнал действий — в PostgreSQL, тяжёлые задания — в Celery.
+
+- Render: создайте Blueprint из `render.yaml`.
+- Railway: добавьте PostgreSQL и Redis, затем разверните `railway.json`. Для
+  worker создайте второй сервис из того же репозитория с командой
+  `celery -A orchestra.worker.celery_app worker --loglevel=INFO`.
+- При старте контейнера автоматически выполняется `alembic upgrade head`.
+
+## Проверка
 
 ```bash
-curl -X POST http://localhost:8787/capture \
-  -H "Content-Type: application/json" \
-  -d '{"url": "https://example.com", "prompt": "Опиши что на странице"}'
+.venv/bin/pytest
+.venv/bin/alembic upgrade head
 ```
 
-Ответ содержит путь к сохранённому скриншоту и результат анализа.
+Нагрузочный сценарий находится в `load/k6-chat.js`. Сначала проверяйте 100
+пользователей, затем постепенно увеличивайте:
 
-## Структура проекта
+```bash
+k6 run -e BASE_URL=http://localhost:8787 -e VUS=100 load/k6-chat.js
+# Только на подготовленном стенде:
+k6 run -e BASE_URL=https://your-host -e VUS=10000 -e HOLD=5m load/k6-chat.js
+```
 
-```
-.
-├── src/index.js     # Express + Playwright + Perplexity
-├── Dockerfile       # образ на базе Playwright
-├── package.json     # зависимости и скрипты
-├── .env.example     # пример конфигурации
-└── .gitignore
-```
+Исходный Node.js сервис скриншотов сохранён в `legacy/auto-screen-perplexity`.
+
+## SIM-звонки Samsung без Bitrix24
+
+Полная инструкция для бесплатного потока
+`Samsung Fold → Windows → Whisper → ИИ‑Оркестр` находится в
+`docs/CALL_INGESTION.md`. Windows-мост лежит в
+`tools/windows-call-watcher`; он не отправляет старые записи при первом запуске
+и защищает каждую запись от повторной обработки.
+
+Оркестр создаёт action `orchestra.task.create` в состоянии `proposed`. Задача
+появляется в локальном проекте только после вызовов `/confirm` и `/execute`.
