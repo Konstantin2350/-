@@ -75,7 +75,7 @@ app.post('/whatsapp/send-file', async (req, res) => {
         .json({ error: configurationError ? 'WhatsApp configuration is invalid' : err.message });
     }
     if (err instanceof WazzupApiError) {
-      console.error('Wazzup send failed:', err.message, err.responseBody || '');
+      console.error('Wazzup send failed:', err.message);
       return res.status(502).json({
         error: 'Wazzup rejected the file message',
         upstreamStatus: err.statusCode,
