@@ -8,6 +8,12 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { chromium } = require('playwright');
+const {
+  WazzupApiError,
+  buildFileMessage,
+  isBearerAuthorized,
+  sendFileMessage,
+} = require('./wazzup');
 
 const {
   PERPLEXITY_API_KEY,
@@ -16,6 +22,10 @@ const {
   MIN_CONFIDENCE = '0.78',
   PLAYWRIGHT_PROFILE_DIR = './pw-profile',
   ARTIFACT_DIR = './artifacts',
+  WAZZUP_API_KEY,
+  WAZZUP_API_BASE_URL = 'https://api.wazzup24.com',
+  WAZZUP_CHANNEL_ID,
+  WAZZUP_SEND_API_KEY,
   PORT = '8787',
 } = process.env;
 
@@ -23,11 +33,57 @@ fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
 fs.mkdirSync(PLAYWRIGHT_PROFILE_DIR, { recursive: true });
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '32kb' }));
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', model: PERPLEXITY_MODEL });
+});
+
+// POST /whatsapp/send-file
+// The file must already be available through a direct public HTTPS URL.
+app.post('/whatsapp/send-file', async (req, res) => {
+  if (!WAZZUP_API_KEY || !WAZZUP_CHANNEL_ID || !WAZZUP_SEND_API_KEY) {
+    return res.status(503).json({ error: 'WhatsApp sending is not configured' });
+  }
+  if (!isBearerAuthorized(req.get('authorization'), WAZZUP_SEND_API_KEY)) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  try {
+    const message = buildFileMessage({
+      channelId: WAZZUP_CHANNEL_ID,
+      phone: req.body?.phone,
+      contentUri: req.body?.contentUri,
+      crmMessageId: req.body?.crmMessageId,
+    });
+    const result = await sendFileMessage({
+      apiKey: WAZZUP_API_KEY,
+      apiBaseUrl: WAZZUP_API_BASE_URL,
+      message,
+    });
+    return res.status(201).json({
+      status: 'sent',
+      messageId: result.messageId,
+      chatId: result.chatId || message.chatId,
+    });
+  } catch (err) {
+    if (err instanceof TypeError) {
+      const configurationError = err.message.startsWith('WAZZUP_');
+      return res
+        .status(configurationError ? 503 : 400)
+        .json({ error: configurationError ? 'WhatsApp configuration is invalid' : err.message });
+    }
+    if (err instanceof WazzupApiError) {
+      console.error('Wazzup send failed:', err.message);
+      return res.status(502).json({
+        error: 'Wazzup rejected the file message',
+        upstreamStatus: err.statusCode,
+      });
+    }
+    console.error('Unexpected WhatsApp send error:', err);
+    return res.status(500).json({ error: 'Failed to send WhatsApp file' });
+  }
 });
 
 // Capture a screenshot of a given URL.
@@ -88,6 +144,10 @@ app.post('/capture', async (req, res) => {
   }
 });
 
-app.listen(Number(PORT), () => {
-  console.log(`auto-screen-perplexity listening on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(Number(PORT), () => {
+    console.log(`auto-screen-perplexity listening on port ${PORT}`);
+  });
+}
+
+module.exports = { app };
