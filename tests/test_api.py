@@ -685,7 +685,7 @@ def test_wazzup_telegram_webhook_creates_lead_replies_and_deduplicates(tmp_path)
                 "type": "text",
                 "status": "inbound",
                 "isEcho": False,
-                "text": "Я Мария, пишу по квартире из ролика блогера",
+                "text": "Валера. Я Мария, пишу по квартире из ролика блогера",
                 "contact": {"name": "Мария", "username": "maria_example"},
             }
         ]
@@ -814,6 +814,113 @@ def test_wazzup_instagram_comment_requires_valera_keyword(tmp_path):
     send_message.assert_awaited_once()
     assert send_message.await_args.kwargs["chat_type"] == "instagram"
     assert send_message.await_args.kwargs["ref_message_id"] == "instagram-message-1"
+
+
+def test_wazzup_campaign_ignores_avito_and_unrelated_new_chats(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    payload = {
+        "messages": [
+            {
+                "messageId": "avito-commercial-1",
+                "channelId": "avito-channel-albina",
+                "chatType": "avito",
+                "chatId": "avito-chat-42",
+                "avitoProfileId": "albina-commercial-real-estate",
+                "type": "text",
+                "status": "inbound",
+                "isEcho": False,
+                "text": "Здравствуйте, интересует коммерческое помещение",
+            },
+            {
+                "messageId": "unrelated-whatsapp-1",
+                "channelId": "shared-whatsapp-channel",
+                "chatType": "whatsapp",
+                "chatId": "unrelated-chat-42",
+                "type": "text",
+                "status": "inbound",
+                "isEcho": False,
+                "text": "Здравствуйте, интересует коммерческое помещение",
+            },
+        ]
+    }
+    with make_client(
+        tmp_path,
+        wazzup_api_key="test-api-key",
+        wazzup_webhook_token="test-webhook-token",
+        wazzup_auto_reply=True,
+    ) as client:
+        send_message = AsyncMock()
+        client.app.state.wazzup.send_message = send_message
+
+        response = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json=payload,
+        )
+        leads = client.get(f"/v1/leads?campaign_code={campaign_code}")
+
+    assert response.status_code == 200
+    assert response.json()["processed"] == [
+        {
+            "message_id": "avito-commercial-1",
+            "status": "ignored",
+            "reason": "campaign_channel_mismatch",
+        },
+        {
+            "message_id": "unrelated-whatsapp-1",
+            "status": "ignored",
+            "reason": "campaign_keyword_missing",
+        },
+    ]
+    assert leads.json()["leads"] == []
+    send_message.assert_not_awaited()
+
+
+def test_wazzup_campaign_stops_previously_misrouted_chat(tmp_path):
+    campaign_code = "gelendzhik-blogger-2708"
+    with make_client(
+        tmp_path,
+        wazzup_api_key="test-api-key",
+        wazzup_webhook_token="test-webhook-token",
+        wazzup_auto_reply=True,
+    ) as client:
+        client.post(
+            f"/v1/webhooks/leads/{campaign_code}",
+            json={
+                "external_id": "wazzup:whatsapp:legacy-commercial-chat",
+                "channel": "whatsapp",
+                "message": "Интересует аренда коммерческого помещения",
+            },
+        )
+        send_message = AsyncMock()
+        client.app.state.wazzup.send_message = send_message
+
+        response = client.post(
+            f"/v1/webhooks/wazzup/{campaign_code}?token=test-webhook-token",
+            json={
+                "messages": [
+                    {
+                        "messageId": "legacy-commercial-follow-up",
+                        "channelId": "shared-whatsapp-channel",
+                        "chatType": "whatsapp",
+                        "chatId": "legacy-commercial-chat",
+                        "type": "text",
+                        "status": "inbound",
+                        "isEcho": False,
+                        "text": "Какая площадь у объекта?",
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["processed"] == [
+        {
+            "message_id": "legacy-commercial-follow-up",
+            "status": "ignored",
+            "reason": "campaign_keyword_missing",
+        }
+    ]
+    send_message.assert_not_awaited()
 
 
 def test_persistent_projects_tasks_and_bitrix_sync_proposal(tmp_path):

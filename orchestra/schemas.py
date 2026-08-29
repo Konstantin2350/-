@@ -199,8 +199,9 @@ class WazzupMessage(BaseModel):
 
     message_id: str = Field(alias="messageId", min_length=1, max_length=255)
     channel_id: str = Field(alias="channelId", min_length=1, max_length=255)
-    chat_type: Literal["whatsapp", "telegram", "instagram"] = Field(alias="chatType")
+    chat_type: Literal["whatsapp", "telegram", "instagram", "avito"] = Field(alias="chatType")
     chat_id: str = Field(alias="chatId", min_length=1, max_length=255)
+    avito_profile_id: str | None = Field(default=None, alias="avitoProfileId", max_length=255)
     message_type: str = Field(default="text", alias="type", max_length=50)
     status: str = Field(default="inbound", max_length=50)
     text: str | None = Field(default=None, max_length=30_000)
