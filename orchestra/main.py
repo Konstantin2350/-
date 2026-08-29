@@ -537,11 +537,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 continue
             external_id = f"wazzup:{message.chat_type}:{message.chat_id}"
             existing_lead = await db.find_lead(x_tenant_id, campaign_code, external_id)
+            activation_texts = [message.text]
+            if existing_lead:
+                activation_texts.extend(
+                    item.get("content", "")
+                    for item in existing_lead.history
+                    if item.get("role") == "client"
+                )
             if (
                 campaign.entry_keywords
-                and not existing_lead
                 and not any(
-                    keyword.casefold() in message.text.casefold()
+                    keyword.casefold() in text.casefold()
+                    for text in activation_texts
                     for keyword in campaign.entry_keywords
                 )
             ):
