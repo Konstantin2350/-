@@ -511,8 +511,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 or message.is_echo
                 or message.message_type != "text"
                 or not message.text
-                or message.chat_type not in campaign.channels
             ):
+                continue
+            if message.chat_type not in campaign.channels:
+                processed.append(
+                    {
+                        "message_id": message.message_id,
+                        "status": "ignored",
+                        "reason": "campaign_channel_mismatch",
+                    }
+                )
                 continue
             if (
                 message.chat_type == "instagram"
@@ -527,9 +535,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     }
                 )
                 continue
+            external_id = f"wazzup:{message.chat_type}:{message.chat_id}"
+            existing_lead = await db.find_lead(x_tenant_id, campaign_code, external_id)
             if (
-                message.chat_type == "instagram"
-                and campaign.entry_keywords
+                campaign.entry_keywords
+                and not existing_lead
                 and not any(
                     keyword.casefold() in message.text.casefold()
                     for keyword in campaign.entry_keywords
@@ -551,7 +561,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             result = await ingest_campaign_lead(
                 campaign_code,
                 LeadIntakeRequest(
-                    external_id=f"wazzup:{message.chat_type}:{message.chat_id}",
+                    external_id=external_id,
                     session_id=f"wazzup:{message.chat_id}",
                     channel=message.chat_type,
                     message=message.text,
